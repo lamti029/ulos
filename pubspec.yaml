@@ -1,0 +1,61 @@
+name: ulos
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.1-dev+1
+
+environment:
+  sdk: ^3.11.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  flutter_map: ^8.0.0
+  latlong2: ^0.9.1
+  geolocator: ^14.0.2
+  geolocator_android: ^5.0.2
+  dio: ^5.7.0
+  shared_preferences: ^2.3.3
+  flutter_bloc: ^9.0.0
+  equatable: ^2.0.7
+  intl: ^0.20.2
+  flutter_animate: ^4.5.2
+  shimmer: ^3.0.0
+  logger: ^2.5.0
+  flutter_dotenv: ^5.2.1
+  crypto: ^3.0.6
+  flutter_map_marker_cluster: ^8.2.2
+  sqflite: ^2.3.0
+  path: ^1.9.0
+  path_provider: ^2.1.0
+  flutter_background_service: ^5.0.7
+  flutter_background_service_android: ^6.1.0
+
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter:
+  uses-material-design: true
+  assets:
+    - .env
+    - .env.dev
+    - .env.prod
+    - assets/images/logo.png
+    - assets/images/map_bg.png
+
+flutter_launcher_icons:
+  android: "ic_launcher"
+  ios: true
+  image_path: "assets/images/logo.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/images/logo.png"
+  # web:
+  #   generate: true
+  #   image_path: "assets/images/logo.png"
+  #   background_color: "#FFFFFF"
+  #   theme_color: "#FFFFFF"
