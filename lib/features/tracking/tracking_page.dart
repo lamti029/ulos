@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
@@ -10,6 +12,11 @@ import '../../core/services/location_service.dart';
 import '../../core/services/scheduler_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/services/wilayah_service.dart';
+import '../../core/services/dio_client.dart';
+import 'package:dio/dio.dart';
+
+// Token bearer dipakai untuk request absensi/start & absensi/stop.
+// Diambil dari token login yang tersimpan.
 
 class TrackingPage extends StatefulWidget {
   const TrackingPage({super.key});
@@ -20,12 +27,61 @@ class TrackingPage extends StatefulWidget {
 
 class _TrackingPageState extends State<TrackingPage>
     with WidgetsBindingObserver {
+  List<Polygon> get _safeWilayahPolygons {
+    // flutter_map PolygonLayer will throw if any LatLng is NaN/Infinity.
+    // Filter polygons/points defensively.
+    if (_wilayahPolygons.isEmpty) return const <Polygon>[];
+
+    List<Polygon> result = [];
+    for (final polygon in _wilayahPolygons) {
+      final safePoints = <LatLng>[];
+      for (final p in polygon.points) {
+        final lat = p.latitude;
+        final lng = p.longitude;
+        if (!lat.isFinite || !lng.isFinite) continue;
+        safePoints.add(LatLng(lat, lng));
+      }
+      if (safePoints.length >= 3) {
+        result.add(
+          Polygon(
+            points: safePoints,
+            color: polygon.color,
+            borderColor: polygon.borderColor,
+            borderStrokeWidth: polygon.borderStrokeWidth,
+          ),
+        );
+      }
+    }
+    return result;
+  }
+
+  bool _isDisposed = false;
   final LocationService _locationService = LocationService();
   late final SchedulerService _schedulerService;
   final MapController _mapController = MapController();
 
   LatLng? _currentPosition;
+
+  // Target points from initialization (wilayah service)
+  List<Map<String, dynamic>> _initialTargetPoints = [];
+
+  // Target points fetched nearby (nearby endpoint after locate / switch)
+  List<Map<String, dynamic>> _nearbyTargetPoints = [];
+  bool _showNearbyTargetPoints = false;
+
+  // Warna marker nearby: primary(biru) dan initial:error(merah)
+
+  // Target points initial (berasal dari WilayahService)
   List<Map<String, dynamic>> _targetPoints = [];
+
+  // Target points nearby (hasil endpoint /nearby)
+  List<Map<String, dynamic>> _targetPointsNearby = [];
+
+  // Nearby caching to avoid hitting API too often
+  LatLng? _lastNearbyCenter;
+  bool _isNearbyLoading = false;
+  final double _nearbyMinDistanceMeters = 100.0;
+
   Map<String, dynamic>? _selectedTargetPoint;
   bool _isLoading = true;
   bool _isTracking = false;
@@ -55,7 +111,10 @@ class _TrackingPageState extends State<TrackingPage>
       setState(() {
         _wilayahPolygons = WilayahService.wilayahPolygons;
         _wilayahData = WilayahService.wilayahData;
-        _targetPoints = WilayahService.targetPoints;
+
+        _initialTargetPoints = WilayahService.targetPoints;
+        _targetPoints = _initialTargetPoints;
+
         _isLoading = false;
       });
       debugPrint('[Tracking] Local state polygons: ${_wilayahPolygons.length}');
@@ -79,15 +138,66 @@ class _TrackingPageState extends State<TrackingPage>
     }
   }
 
+  bool _isFiniteLatLng(LatLng l) {
+    return l.latitude.isFinite && l.longitude.isFinite;
+  }
+
+  bool _mapHasRendered = false;
+
   Future<void> _getCurrentLocation() async {
     final position = await _locationService.getCurrentPosition();
-    if (position != null && mounted) {
-      setState(() {
-        _currentPosition = LatLng(position.latitude, position.longitude);
-        _isLoading = false;
-      });
-      _mapController.move(_currentPosition!, 15);
+
+    if (position == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Gagal mendapatkan lokasi. Pastikan GPS aktif.'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+      setState(() => _isStartLoading = false);
+      return;
     }
+    if (!mounted || _isDisposed) return;
+
+    final currentLatLng = LatLng(position.latitude, position.longitude);
+    if (!_isFiniteLatLng(currentLatLng)) {
+      debugPrint('[_getCurrentLocation] Invalid lat/lng: $currentLatLng');
+      return;
+    }
+
+    setState(() {
+      _currentPosition = currentLatLng;
+
+      _isLoading = false;
+    });
+
+    // MapController requires FlutterMap to be rendered at least once.
+    if (_mapHasRendered) {
+      _mapController.move(currentLatLng, 15);
+    }
+
+    // if (showTargetNearby) {
+    //   // Fetch nearby target points but do not show them until user taps FAB.
+    //   final nearby = await _fetchNearbyTargetPoints(
+    //     lat: currentLatLng.latitude,
+    //     lng: currentLatLng.longitude,
+    //   );
+    //   debugPrint(
+    //     '[_getCurrentLocation] nearby points fetched: ${nearby.length}',
+    //   );
+
+    //   if (mounted) {
+    //     setState(() {
+    //       _nearbyTargetPoints = nearby;
+    //       // Keep showing initial/last selected target points.
+    //       if (!_showNearbyTargetPoints) {
+    //         _targetPoints = _initialTargetPoints;
+    //       }
+    //     });
+    //   }
+    // }
   }
 
   void _showTargetPointDetail(Map<String, dynamic> point) {
@@ -179,7 +289,7 @@ class _TrackingPageState extends State<TrackingPage>
                         onPressed: () => Navigator.pop(context),
                         label: const Text('Close'),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.error,
+                          backgroundColor: AppColors.secondary,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
@@ -208,6 +318,141 @@ class _TrackingPageState extends State<TrackingPage>
     );
   }
 
+  Future<List<Map<String, dynamic>>> _fetchNearbyTargetPoints({
+    required double lat,
+    required double lng,
+  }) async {
+    const int limit = 20;
+
+    final allPoints = <Map<String, dynamic>>[];
+
+    try {
+      // Note: DioClient is already configured with baseUrl from EnvService.
+      final dioClient = DioClient();
+
+      final firstResponse = await dioClient.dio.get(
+        'https://trackingapi.bps.web.id/api/titik-sasaran/nearby',
+        queryParameters: {
+          'lat': lat,
+          'lng': lng,
+          'radius': 100,
+          'page': 1,
+          'limit': limit,
+        },
+      );
+
+      if (firstResponse.statusCode != 200) {
+        debugPrint(
+          '[_fetchNearbyTargetPoints] firstResponse status: '
+          '${firstResponse.statusCode}',
+        );
+        return allPoints;
+      }
+
+      final firstData = List<Map<String, dynamic>>.from(
+        firstResponse.data['data'] ?? [],
+      );
+      allPoints.addAll(firstData);
+
+      final totalPages =
+          firstResponse.data['meta']?['pagination']?['total_pages'] ?? 1;
+
+      if (totalPages > 1) {
+        final futures = <Future<dynamic>>[];
+
+        for (int page = 2; page <= totalPages; page++) {
+          futures.add(
+            dioClient.dio.get(
+              'https://trackingapi.bps.web.id/api/titik-sasaran/nearby',
+              queryParameters: {
+                'lat': lat,
+                'lng': lng,
+                'radius': 100,
+                'page': page,
+                'limit': limit,
+              },
+            ),
+          );
+        }
+
+        final responses = await Future.wait(futures);
+        for (final r in responses) {
+          if (r.statusCode == 200) {
+            allPoints.addAll(
+              List<Map<String, dynamic>>.from(r.data['data'] ?? []),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[_fetchNearbyTargetPoints] error: $e');
+      return allPoints;
+    }
+
+    // Normalize fields so _targetMarkers works.
+    return allPoints
+        .map((p) {
+          final latVal = (p['latitude'] ?? p['lat'] ?? p['point_lat'])
+              ?.toString();
+          final lngVal = (p['longitude'] ?? p['lng'] ?? p['point_lng'])
+              ?.toString();
+
+          return <String, dynamic>{
+            ...p,
+            'id': p['id'] ?? p['titik_id'] ?? p['titik_sasaran_id'],
+            'nama': p['nama'] ?? p['nama_titik'] ?? p['titik_sasaran'],
+            'latitude': latVal != null ? double.tryParse(latVal) : null,
+            'longitude': lngVal != null ? double.tryParse(lngVal) : null,
+          };
+        })
+        .where((p) {
+          final latOk = (p['latitude'] as double?) != null;
+          final lngOk = (p['longitude'] as double?) != null;
+          return latOk && lngOk;
+        })
+        .toList();
+  }
+
+  double _distanceMeters(LatLng a, LatLng b) {
+    // Haversine formula
+    const double earthRadius = 6371000.0;
+    final dLat = (b.latitude - a.latitude) * (3.141592653589793 / 180.0);
+    final dLng = (b.longitude - a.longitude) * (3.141592653589793 / 180.0);
+    final lat1 = a.latitude * (3.141592653589793 / 180.0);
+    final lat2 = b.latitude * (3.141592653589793 / 180.0);
+
+    final double sinDLat = math.sin(dLat / 2.0);
+    final double sinDLng = math.sin(dLng / 2.0);
+
+    final double h =
+        sinDLat * sinDLat +
+        sinDLng * sinDLng * (math.cos(lat1) * math.cos(lat2));
+
+    return 2.0 * earthRadius * math.sqrt(h);
+  }
+
+  Future<void> _postAbsensi(String action) async {
+    // action: 'start' | 'stop'
+    try {
+      final dioClient = DioClient();
+
+      // DioClient interceptor otomatis menempelkan Authorization dari token login.
+      final res = await dioClient.dio.post(
+        '/api/absensi/$action',
+        data: '',
+        options: Options(headers: const {'accept': 'application/json'}),
+      );
+
+      debugPrint('[_postAbsensi/$action] status=${res.statusCode}');
+
+      if (res.statusCode != 200 && res.statusCode != 201) {
+        debugPrint('[_postAbsensi/$action] response=${res.data}');
+      }
+    } catch (e) {
+      debugPrint('[_postAbsensi/$action] error: $e');
+    }
+  }
+
   Future<void> _toggleTracking() async {
     if (_isTracking) {
       // Stop tracking
@@ -232,6 +477,7 @@ class _TrackingPageState extends State<TrackingPage>
         debugPrint('[_toggleTracking] error sending last location: $e');
       } finally {
         await _schedulerService.stop();
+        await _postAbsensi('stop');
         _updateTrackingStatus();
         if (mounted) {
           setState(() => _isStopLoading = false);
@@ -257,6 +503,8 @@ class _TrackingPageState extends State<TrackingPage>
         setState(() => _isStartLoading = false);
         return;
       }
+
+      await _postAbsensi('start');
 
       final firstLocation = {
         'latitude': position.latitude,
@@ -305,13 +553,35 @@ class _TrackingPageState extends State<TrackingPage>
       return;
     }
 
-    // Create bounds from first point, then extend with all other points
-    final firstPoint = selectedPolygons.first.points.first;
-    final bounds = LatLngBounds(firstPoint, firstPoint);
+    // Create bounds from first finite point, then extend with all other finite points
+    LatLngBounds? bounds;
     for (final polygon in selectedPolygons) {
       for (final point in polygon.points) {
-        bounds.extend(point);
+        if (!_isFiniteLatLng(point)) continue;
+        if (bounds == null) {
+          bounds = LatLngBounds(point, point);
+        } else {
+          bounds.extend(point);
+        }
       }
+    }
+
+    if (bounds == null) {
+      debugPrint(
+        '[_zoomToPolygon] No finite polygon points; skipping fitCamera',
+      );
+      return;
+    }
+
+    // Saat zoom ke polygon, sembunyikan nearby target points.
+    setState(() {
+      _showNearbyTargetPoints = false;
+      _targetPoints = _initialTargetPoints;
+    });
+
+    if (!_mapHasRendered) {
+      debugPrint('[_zoomToPolygon] Map not rendered yet; skipping fitCamera');
+      return;
     }
 
     _mapController.fitCamera(
@@ -483,6 +753,68 @@ class _TrackingPageState extends State<TrackingPage>
     );
   }
 
+  void _showTargetPoitsNearby() async {
+    // Only now fetch & show nearby target points
+    final position = await _locationService.getCurrentPosition();
+    if (!mounted) return;
+    if (position == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Gagal mendapatkan lokasi. Pastikan GPS aktif.'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+      setState(() => _isStartLoading = false);
+      return;
+    }
+
+    final currentLatLng = LatLng(position.latitude, position.longitude);
+    if (!_isFiniteLatLng(currentLatLng)) {
+      debugPrint('[_showTargetPoitsNearby] Invalid lat/lng: $currentLatLng');
+      return;
+    }
+    _mapController.move(currentLatLng, 15);
+
+    // If user didn't move enough (>=100m), reuse cache.
+    final shouldRefetch =
+        _lastNearbyCenter == null ||
+        _distanceMeters(_lastNearbyCenter!, currentLatLng) >=
+            _nearbyMinDistanceMeters;
+
+    try {
+      if (shouldRefetch) {
+        setState(() {
+          _isNearbyLoading = true;
+        });
+
+        final nearby = await _fetchNearbyTargetPoints(
+          lat: currentLatLng.latitude,
+          lng: currentLatLng.longitude,
+        );
+
+        if (!mounted) return;
+
+        setState(() {
+          _nearbyTargetPoints = nearby;
+          _lastNearbyCenter = currentLatLng;
+        });
+      }
+
+      setState(() {
+        _showNearbyTargetPoints = true;
+        _targetPointsNearby = _nearbyTargetPoints;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isNearbyLoading = false;
+        });
+      }
+    }
+  }
+
   Future<void> _syncWilayahData() async {
     final prefs = await SharedPreferences.getInstance();
     final lastSync = prefs.getInt('last_wilayah_sync') ?? 0;
@@ -513,7 +845,9 @@ class _TrackingPageState extends State<TrackingPage>
       setState(() {
         _wilayahPolygons = WilayahService.wilayahPolygons;
         _wilayahData = WilayahService.wilayahData;
-        _targetPoints = WilayahService.targetPoints;
+
+        _initialTargetPoints = WilayahService.targetPoints;
+        _targetPoints = _initialTargetPoints;
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -579,9 +913,9 @@ class _TrackingPageState extends State<TrackingPage>
                 idSubSLS,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                  fontSize: 10,
+                  fontSize: 12,
                   fontWeight: FontWeight.bold,
-                  color: AppColors.primary,
+                  color: Colors.black,
                 ),
                 overflow: TextOverflow.ellipsis,
               ),
@@ -593,51 +927,72 @@ class _TrackingPageState extends State<TrackingPage>
     return markers;
   }
 
-  List<Marker> get _targetMarkers {
-    return _targetPoints.map((point) {
-      final lat = (point['latitude'] as num?)?.toDouble() ?? 0.0;
-      final lng = (point['longitude'] as num?)?.toDouble() ?? 0.0;
-      final bool isSelected =
-          _selectedTargetPoint != null &&
-          _selectedTargetPoint!['id'] == point['id'];
-      return Marker(
-        key: ValueKey(point['id']),
-        point: LatLng(lat, lng),
-        width: 44,
-        height: 44,
-        child: GestureDetector(
-          onTap: () => _showTargetPointDetail(point),
-          child: Container(
-            decoration: BoxDecoration(
-              color: isSelected ? AppColors.success : AppColors.error,
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: Colors.white,
-                width: isSelected ? 3 : 2,
-              ),
-              boxShadow: isSelected
-                  ? [
-                      BoxShadow(
-                        color: AppColors.success.withAlpha(128),
-                        blurRadius: 8,
-                        spreadRadius: 2,
-                      ),
-                    ]
-                  : null,
-            ),
-            child: Icon(
-              isSelected ? Icons.check_circle : Icons.location_on,
-              color: Colors.white,
-              size: 22,
-            ),
+  Marker _buildTargetMarker(
+    Map<String, dynamic> point, {
+    required bool isNearby,
+    required int index,
+  }) {
+    final lat = (point['latitude'] as num?)?.toDouble() ?? 0.0;
+    final lng = (point['longitude'] as num?)?.toDouble() ?? 0.0;
+
+    final bool isSelected =
+        _selectedTargetPoint != null &&
+        _selectedTargetPoint!['id'] == point['id'];
+
+    // warna dasar: initial=error(merah), nearby=primary(biru)
+    final Color baseColor = isNearby ? AppColors.secondary : AppColors.primary;
+
+    final compositeKey = (point['id'] != null)
+        ? '${point['id']}_$lat,$lng'
+        : 'fallback_${lat},$lng';
+
+    return Marker(
+      key: ValueKey('${compositeKey}_${isNearby ? 'near' : 'init'}_$index'),
+      point: LatLng(lat, lng),
+      width: 44,
+      height: 44,
+      child: GestureDetector(
+        onTap: () => _showTargetPointDetail(point),
+        child: Container(
+          decoration: BoxDecoration(
+            color: isSelected ? AppColors.success : baseColor,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: isSelected ? 3 : 2),
+            boxShadow: isSelected
+                ? [
+                    BoxShadow(
+                      color: AppColors.success.withAlpha(128),
+                      blurRadius: 8,
+                      spreadRadius: 2,
+                    ),
+                  ]
+                : null,
+          ),
+          child: Icon(
+            isSelected ? Icons.check_circle : Icons.location_on,
+            color: Colors.white,
+            size: 22,
           ),
         ),
-      );
+      ),
+    );
+  }
+
+  List<Marker> get _initialTargetMarkers {
+    return _targetPoints.asMap().entries.map((entry) {
+      return _buildTargetMarker(entry.value, isNearby: false, index: entry.key);
+    }).toList();
+  }
+
+  List<Marker> get _nearbyTargetMarkers {
+    return _targetPointsNearby.asMap().entries.map((entry) {
+      return _buildTargetMarker(entry.value, isNearby: true, index: entry.key);
     }).toList();
   }
 
   @override
   void dispose() {
+    _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _mapController.dispose();
     super.dispose();
@@ -660,12 +1015,27 @@ class _TrackingPageState extends State<TrackingPage>
           ? const Center(child: CircularProgressIndicator())
           : Stack(
               children: [
+                Builder(
+                  builder: (context) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (!_mapHasRendered) {
+                        setState(() => _mapHasRendered = true);
+                      }
+                    });
+                    return const SizedBox.shrink();
+                  },
+                ),
                 FlutterMap(
                   mapController: _mapController,
                   options: MapOptions(
                     initialCenter:
-                        _currentPosition ?? const LatLng(-6.2088, 106.8456),
+                        (_currentPosition != null &&
+                            _isFiniteLatLng(_currentPosition!))
+                        ? _currentPosition!
+                        : const LatLng(-6.2088, 106.8456),
                     initialZoom: 14,
+                    // FlutterMap versi yang dipakai di project ini belum punya parameter interactiveFlags.
+                    // Zoom/drag tetap harus bekerja via default MapOptions.
                   ),
                   children: [
                     TileLayer(
@@ -682,7 +1052,7 @@ class _TrackingPageState extends State<TrackingPage>
                             height: 48,
                             child: Container(
                               decoration: BoxDecoration(
-                                color: AppColors.primary,
+                                color: AppColors.secondary,
                                 shape: BoxShape.circle,
                                 border: Border.all(
                                   color: Colors.white,
@@ -706,72 +1076,135 @@ class _TrackingPageState extends State<TrackingPage>
                         ],
                       ),
                     if (_wilayahPolygons.isNotEmpty)
-                      PolygonLayer(polygons: _wilayahPolygons),
+                      PolygonLayer(polygons: _safeWilayahPolygons),
                     if (_wilayahLabelMarkers.isNotEmpty)
                       MarkerLayer(markers: _wilayahLabelMarkers),
-                    MarkerClusterLayerWidget(
-                      options: MarkerClusterLayerOptions(
-                        maxClusterRadius: 120,
-                        disableClusteringAtZoom: 17,
-                        size: const Size(40, 40),
-                        alignment: Alignment.center,
-                        padding: const EdgeInsets.all(50),
-                        maxZoom: 15,
-                        markers: _targetMarkers,
-                        builder: (context, markers) {
-                          return Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(20),
-                              color: AppColors.primary,
-                              border: Border.all(color: Colors.white, width: 2),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withAlpha(77),
-                                  blurRadius: 6,
-                                  spreadRadius: 1,
-                                ),
-                              ],
-                            ),
-                            child: Center(
-                              child: Text(
-                                markers.length.toString(),
-                                style: const TextStyle(
+                    if (_initialTargetMarkers.isNotEmpty)
+                      MarkerClusterLayerWidget(
+                        options: MarkerClusterLayerOptions(
+                          maxClusterRadius: 120,
+                          disableClusteringAtZoom: 17,
+                          size: const Size(40, 40),
+                          alignment: Alignment.center,
+                          padding: const EdgeInsets.all(50),
+                          maxZoom: 15,
+                          markers: _initialTargetMarkers,
+                          builder: (context, markers) {
+                            return Container(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(20),
+                                color: AppColors.primary,
+                                border: Border.all(
                                   color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
+                                  width: 2,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withAlpha(77),
+                                    blurRadius: 6,
+                                    spreadRadius: 1,
+                                  ),
+                                ],
+                              ),
+                              child: Center(
+                                child: Text(
+                                  markers.length.toString(),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
                                 ),
                               ),
-                            ),
-                          );
-                        },
+                            );
+                          },
+                        ),
                       ),
-                    ),
+                    if (_showNearbyTargetPoints &&
+                        _nearbyTargetMarkers.isNotEmpty)
+                      MarkerClusterLayerWidget(
+                        options: MarkerClusterLayerOptions(
+                          maxClusterRadius: 120,
+                          disableClusteringAtZoom: 17,
+                          size: const Size(40, 40),
+                          alignment: Alignment.center,
+                          padding: const EdgeInsets.all(50),
+                          maxZoom: 15,
+                          markers: _nearbyTargetMarkers,
+                          builder: (context, markers) {
+                            return Container(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(20),
+                                color: AppColors.primary,
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 2,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withAlpha(77),
+                                    blurRadius: 6,
+                                    spreadRadius: 1,
+                                  ),
+                                ],
+                              ),
+                              child: Center(
+                                child: Text(
+                                  markers.length.toString(),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
                   ],
                 ),
                 Positioned(
                   bottom: 400,
                   right: 16,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
+                  child: Stack(
+                    alignment: Alignment.center,
                     children: [
-                      FloatingActionButton.small(
-                        heroTag: 'locate',
-                        backgroundColor: AppColors.surface,
-                        foregroundColor: AppColors.primary,
-                        onPressed: _getCurrentLocation,
-                        child: const Icon(Icons.my_location),
-                      ),
-                      const SizedBox(height: 8),
-                      FloatingActionButton.small(
-                        heroTag: 'zoom_polygon',
-                        backgroundColor: AppColors.surface,
-                        foregroundColor: AppColors.primary,
-                        onPressed: _showPolygonSelector,
-                        child: const Icon(Icons.crop_free),
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // locate
+                          FloatingActionButton.small(
+                            heroTag: 'locate',
+                            backgroundColor: AppColors.surface,
+                            foregroundColor: AppColors.primary,
+                            onPressed: _getCurrentLocation,
+                            child: const Icon(Icons.my_location),
+                          ),
+                          const SizedBox(height: 8),
+                          FloatingActionButton.small(
+                            heroTag: 'zoom_polygon',
+                            backgroundColor: AppColors.surface,
+                            foregroundColor: AppColors.primary,
+                            onPressed: _showPolygonSelector,
+                            child: const Icon(Icons.crop_free),
+                          ),
+                          const SizedBox(height: 8),
+                          FloatingActionButton.small(
+                            heroTag: 'show_target_nearby',
+                            backgroundColor: AppColors.surface,
+                            foregroundColor: AppColors.primary,
+                            onPressed: _isNearbyLoading
+                                ? null
+                                : _showTargetPoitsNearby,
+                            child: const Icon(Icons.place_outlined),
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 ),
+
                 if (_selectedTargetPoint != null && !_isTracking)
                   Positioned(
                     bottom: 88,
