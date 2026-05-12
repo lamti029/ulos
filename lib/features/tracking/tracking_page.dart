@@ -177,27 +177,6 @@ class _TrackingPageState extends State<TrackingPage>
     if (_mapHasRendered) {
       _mapController.move(currentLatLng, 15);
     }
-
-    // if (showTargetNearby) {
-    //   // Fetch nearby target points but do not show them until user taps FAB.
-    //   final nearby = await _fetchNearbyTargetPoints(
-    //     lat: currentLatLng.latitude,
-    //     lng: currentLatLng.longitude,
-    //   );
-    //   debugPrint(
-    //     '[_getCurrentLocation] nearby points fetched: ${nearby.length}',
-    //   );
-
-    //   if (mounted) {
-    //     setState(() {
-    //       _nearbyTargetPoints = nearby;
-    //       // Keep showing initial/last selected target points.
-    //       if (!_showNearbyTargetPoints) {
-    //         _targetPoints = _initialTargetPoints;
-    //       }
-    //     });
-    //   }
-    // }
   }
 
   void _showTargetPointDetail(Map<String, dynamic> point) {

@@ -10,11 +10,21 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  cupertino_icons: ^1.0.8
-  flutter_map: ^8.0.0
+  
+  # Map & Markers (Locked to compatible versions)
+  flutter_map: ^7.0.2
+  flutter_map_marker_cluster: ^1.4.0 # Use 5.0.0 for better compatibility with Map v7
   latlong2: ^0.9.1
-  geolocator: ^14.0.2
-  geolocator_android: ^5.0.2
+  
+  # Location & Background (API 24 Compatible)
+  geolocator: ^12.0.0
+  geolocator_android: ^4.1.3
+  flutter_background_service: ^5.0.7
+  flutter_background_service_android: ^6.3.1
+
+  # Core Utilities
+  package_info_plus: ^8.0.0
+  cupertino_icons: ^1.0.8
   dio: ^5.7.0
   shared_preferences: ^2.3.3
   flutter_bloc: ^9.0.0
@@ -25,12 +35,9 @@ dependencies:
   logger: ^2.5.0
   flutter_dotenv: ^5.2.1
   crypto: ^3.0.6
-  flutter_map_marker_cluster: ^8.2.2
   sqflite: ^2.3.0
   path: ^1.9.0
   path_provider: ^2.1.0
-  flutter_background_service: ^5.0.7
-  flutter_background_service_android: ^6.1.0
 
 
 dev_dependencies:
@@ -54,8 +61,3 @@ flutter_launcher_icons:
   image_path: "assets/images/logo.png"
   adaptive_icon_background: "#FFFFFF"
   adaptive_icon_foreground: "assets/images/logo.png"
-  # web:
-  #   generate: true
-  #   image_path: "assets/images/logo.png"
-  #   background_color: "#FFFFFF"
-  #   theme_color: "#FFFFFF"
