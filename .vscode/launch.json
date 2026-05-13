@@ -1,0 +1,51 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ulos (Dev)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "args": [
+        "--dart-define=ENV=dev"
+      ],
+      "flutterMode": "debug"
+    },
+    {
+      "name": "ulos (Prod)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "args": [
+        "--dart-define=ENV=prod"
+      ],
+      "flutterMode": "debug"
+    },
+    {
+      "name": "ulos (Chrome - no CORS)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "args": [
+        "-d",
+        "chrome",
+        "--web-browser-flag=--disable-web-security",
+        "--web-browser-flag=--disable-features=IsolateOrigins,site-per-process",
+        "--web-browser-flag=--disable-site-isolation-trials"
+      ],
+      "flutterMode": "debug"
+    },
+    {
+      "name": "ulos (Chrome - default)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "args": [
+        "-d",
+        "chrome"
+      ],
+      "flutterMode": "debug"
+    }
+  ]
+}
+

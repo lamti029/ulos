@@ -32,9 +32,10 @@ class LocationService {
       final hasPermission = await requestPermission();
       if (!hasPermission) return null;
       return await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-        ),
+        // locationSettings: const LocationSettings(
+        //   accuracy: LocationAccuracy.high,
+        // ),
+        desiredAccuracy: LocationAccuracy.high,
       );
     } catch (e) {
       _logger.e('Error getting current position: $e');

@@ -20,8 +20,8 @@ ULOS adalah aplikasi mobile Flutter untuk pelacakan lokasi real-time yang dikemb
 | **Framework** | Flutter 3.x (Dart SDK ^3.11.4), Material Design |
 | **State Management** | Flutter BLoC 9.0 + Equatable |
 | **HTTP Client** | Dio 5.7 |
-| **Location/GPS** | Geolocator 13.0 (foreground/background/permissions) |
-| **Maps** | Flutter Map 8.0 + Marker Cluster 8.2 + LatLong2 |
+| **Location/GPS** | Geolocator 12.0 (foreground/background/permissions) |
+| **Maps** | Flutter Map 7.0.2 + Marker Cluster 1.4.0 + LatLong2 |
 | **Local DB** | Sqflite 2.3 + Path Provider |
 | **Environment** | Flutter Dotenv 5.2 + Crypto |
 | **UI/UX** | Shimmer, Flutter Animate 4.5, Intl |
@@ -33,9 +33,7 @@ ULOS adalah aplikasi mobile Flutter untuk pelacakan lokasi real-time yang dikemb
 ### Sistem
 - **Flutter SDK**: ^3.11.4+ (`flutter doctor` untuk verifikasi).
 - **Dart SDK**: ^3.11.4 (termasuk dalam Flutter).
-- **Android Studio** (untuk Android emulator/build).
-- **Xcode** (macOS, untuk iOS build).
-- **Chrome** (untuk web dev).
+
 
 ### Dependencies
 ```
@@ -50,19 +48,19 @@ Dukungan otomatis switching **Development** (`dev`) ↔ **Production** (`prod`).
 ### File Konfigurasi
 | File | Tujuan |
 |------|--------|
-| `assets/env.dev.json` | Dev config (edit `baseUrl`) |
-| `assets/env.prod.json` | Prod config |
+| Dev config (edit `baseUrl`) |
 | `.env.dev` / `.env.prod` | Override via flutter_dotenv (optional) |
 
-**env.dev.json contoh:**
-```json
-{
-  \"baseUrl\": \"https://trackingapi.bps.web.id\",
-  \"locationThreshold\": 0.000269
-}
-```
+## env.dev 
+BASE_URL=https://trackingapi.bps.web.id
 
-Loading priority: dart-define → .env.{env} → assets/env.{env}.json → fallback.
+# Background Location Service Configuration
+DISTANCE_FILTER_METERS=5.0 (Minimal radius pergerakan dari titik lokasi sebelumnya)
+LOCATION_INTERVAL_SECONDS=10
+FLUSH_INTERVAL_SECONDS=60
+SYNC_INTERVAL_SECONDS=300
+BATCH_LIMIT=100
+
 
 ## Cara Menjalankan (Local Development)
 
@@ -79,15 +77,11 @@ flutter pub run flutter_launcher_icons  # Generate icons (opsional)
 ./scripts/run_dev.sh
 
 # Prod mode
-./scripts/run_prod.sh
+./scripts/run_prod.sh 
 
 # Dengan device spesifik
 ./scripts/run_dev.sh -d emulator-5554
 ```
-
-### 3. VS Code Launch (F5)
-- `ulos (Dev)` / `ulos (Prod)`
-- `ulos (Chrome - no CORS)` untuk web dev.
 
 ### 4. CLI Manual
 ```bash
@@ -98,7 +92,6 @@ flutter run --dart-define=ENV=dev
 flutter run --dart-define=ENV=prod
 ```
 
-**Web CORS Note**: Gunakan `--disable-web-security` untuk dev, atau emulator mobile.
 
 ## Building untuk Release
 

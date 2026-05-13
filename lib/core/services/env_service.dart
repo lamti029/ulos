@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -78,6 +80,15 @@ class EnvService {
 
     // 5. Final fallback
     baseUrl = loadedUrl ?? 'https://trackingapi.bps.web.id';
+
+    // Android emulator can’t reach services on the dev machine via localhost.
+    // If baseUrl is configured as localhost/127.0.0.1, remap it to the
+    // Android emulator alias for the host machine.
+    //
+    // https://developer.android.com/studio/run/emulator-networking
+    if (Platform.isAndroid) {
+      baseUrl = _remapEmulatorHost(baseUrl);
+    }
 
     // 6. Load background location service configurations
     double? loadedDistanceFilter;
@@ -206,6 +217,26 @@ class EnvService {
     } catch (_) {
       return null;
     }
+  }
+
+  static String _remapEmulatorHost(String url) {
+    // Only rewrite hosts that commonly point to the emulator itself.
+    // - localhost
+    // - 127.0.0.1
+    // - [::1]
+    const replacements = {
+      'localhost': '10.0.2.2',
+      '127.0.0.1': '10.0.2.2',
+      '[::1]': '10.0.2.2',
+    };
+
+    String remapped = url;
+    replacements.forEach((from, to) {
+      // Replace both with/without scheme. Use simple string replace
+      // because baseUrl is expected to be a full URL.
+      remapped = remapped.replaceAll(from, to);
+    });
+    return remapped;
   }
 
   static Future<String?> _loadFromAsset() async {

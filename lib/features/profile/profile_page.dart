@@ -3,6 +3,8 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/services/dio_client.dart';
+import '../../core/utils/app_version_utils.dart';
+
 import '../../core/utils/jwt_utils.dart';
 import '../login/login_page.dart';
 
@@ -15,12 +17,23 @@ class ProfilePage extends StatefulWidget {
 
 class _ProfilePageState extends State<ProfilePage> {
   String? _userName;
+  String? _appVersionText;
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
     _loadUserName();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    final v = await AppVersionUtils.getAppVersionText();
+    if (mounted) {
+      setState(() {
+        _appVersionText = v;
+      });
+    }
   }
 
   Future<void> _loadUserName() async {
@@ -188,8 +201,10 @@ class _ProfilePageState extends State<ProfilePage> {
               const SizedBox(height: 12),
               _InfoCard(
                     icon: Icons.app_shortcut_outlined,
-                    title: 'Aplikasi',
-                    value: AppConstants.appName,
+                    title: 'Nama Aplikasi',
+                    value:
+                        '${AppConstants.appName} (${_appVersionText ?? 'v-'})',
+
                     iconColor: AppColors.warning,
                     iconBgColor: AppColors.warning.withAlpha(26),
                   )

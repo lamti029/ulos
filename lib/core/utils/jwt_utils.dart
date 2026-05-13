@@ -20,6 +20,32 @@ class JwtUtils {
     }
   }
 
+  /// Check JWT expiration.
+  ///
+  /// Uses `exp` claim (seconds since epoch, JWT standard).
+  /// If `exp` is missing/invalid, returns `false` (treat token as not expired).
+  static bool isTokenExpired(String token) {
+    final payload = _decodePayload(token);
+    if (payload == null) return false;
+
+    final exp = payload['exp'];
+    if (exp == null) return false;
+
+    int? expSeconds;
+    if (exp is int) {
+      expSeconds = exp;
+    } else if (exp is double) {
+      expSeconds = exp.toInt();
+    } else if (exp is String) {
+      expSeconds = int.tryParse(exp);
+    }
+
+    if (expSeconds == null) return false;
+
+    final nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    return nowSeconds >= expSeconds;
+  }
+
   static Future<int?> getUserId() async {
     final token = await DioClient().getToken();
     if (token == null || token.isEmpty) return null;

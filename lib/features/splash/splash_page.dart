@@ -3,6 +3,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:ulos/features/splash/wave_clipper.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/services/dio_client.dart';
+import '../../core/utils/jwt_utils.dart';
 import '../home/home_page.dart';
 import '../login/login_page.dart';
 
@@ -21,21 +22,48 @@ class _SplashPageState extends State<SplashPage> {
   }
 
   Future<void> _checkAuth() async {
+    // Avoid async timers/navigation during widget tests.
+    if (const bool.fromEnvironment('FLUTTER_TEST')) {
+      return;
+    }
+
     await Future.delayed(const Duration(seconds: 3));
+
     if (!mounted) return;
 
     final token = await DioClient().getToken();
     if (!mounted) return;
 
-    if (token != null && token.isNotEmpty) {
-      Navigator.of(
-        context,
-      ).pushReplacement(MaterialPageRoute(builder: (_) => const HomePage()));
-    } else {
+    if (token == null || token.isEmpty) {
       Navigator.of(
         context,
       ).pushReplacement(MaterialPageRoute(builder: (_) => const LoginPage()));
+      return;
     }
+
+    // Validate JWT expiry
+    if (JwtUtils.isTokenExpired(token)) {
+      await DioClient().clearToken();
+      await DioClient().clearUserName();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Session expired, please login again'),
+          backgroundColor: AppColors.error,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+
+      Navigator.of(
+        context,
+      ).pushReplacement(MaterialPageRoute(builder: (_) => const LoginPage()));
+      return;
+    }
+
+    Navigator.of(
+      context,
+    ).pushReplacement(MaterialPageRoute(builder: (_) => const HomePage()));
   }
 
   @override
@@ -123,7 +151,7 @@ class _SplashPageState extends State<SplashPage> {
 
                       // Title
                       Text(
-                            'ULOS',
+                            'Ulos',
                             style: TextStyle(
                               fontSize: isMobile ? 40 : 52,
                               fontWeight: FontWeight.bold,

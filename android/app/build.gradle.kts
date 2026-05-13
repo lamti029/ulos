@@ -16,6 +16,7 @@ android {
     }
 
     kotlinOptions {
+        @Suppress("DEPRECATION")
         jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
@@ -24,10 +25,11 @@ android {
         applicationId = "com.bps.ulos"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        multiDexEnabled = true
     }
 
     buildTypes {

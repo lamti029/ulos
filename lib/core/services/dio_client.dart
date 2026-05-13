@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+
 import 'package:shared_preferences/shared_preferences.dart';
 import '../constants/api_constants.dart';
 import '../constants/app_constants.dart';
@@ -26,6 +27,7 @@ class DioClient {
     _dio = Dio(
       BaseOptions(
         baseUrl: ApiConstants.baseUrl,
+
         connectTimeout: const Duration(seconds: 30),
         receiveTimeout: const Duration(seconds: 30),
         headers: {
@@ -36,6 +38,30 @@ class DioClient {
         validateStatus: (status) => true,
       ),
     );
+
+    // Dev-only TLS debug toggle.
+    // NOTE: Overriding certificate validation is insecure; keep it strictly off by default.
+    final bool allowBadCertificates = const bool.fromEnvironment(
+      'ALLOW_BAD_CERTS',
+      defaultValue: false,
+    );
+
+    assert(() {
+      // ignore: avoid_print
+      print('[DioClient] ALLOW_BAD_CERTS=$allowBadCertificates');
+      return true;
+    }());
+
+    // NOTE: Intentionally not implementing certificate override here.
+    // The exact API for disabling TLS verification is platform-dependent and
+    // differs between Flutter web vs mobile/desktop.
+    // Keep this toggle as a diagnostic flag for now.
+    if (allowBadCertificates) {
+      // ignore: avoid_print
+      print(
+        '[DioClient] ALLOW_BAD_CERTS=true but certificate override is disabled in this build.',
+      );
+    }
 
     _dio.interceptors.add(
       InterceptorsWrapper(
@@ -87,18 +113,22 @@ class DioClient {
             }
           }
 
+          // Session expired/invalid
           if (e.response?.statusCode == 401) {
-            final corsMsg =
-                'Invalid credentials. Please check your email and password and try again.\n';
+            // Clear token so next app open / next splash check redirects to login.
+            // Note: No navigation here (no BuildContext). UI redirection happens in SplashPage.
+            clearSessionIfNeeded();
+
             handler.reject(
               DioException(
                 requestOptions: e.requestOptions,
-                error: CorsException(corsMsg),
-                type: DioExceptionType.connectionError,
+                error: CorsException('Session expired, please login again'),
+                type: DioExceptionType.unknown,
               ),
             );
-            // Handle unauthorized
+            return;
           }
+
           handler.next(e);
         },
       ),
@@ -107,6 +137,16 @@ class DioClient {
     _dio.interceptors.add(
       LogInterceptor(requestBody: true, responseBody: true),
     );
+  }
+
+  static bool _isClearingSession = false;
+  static void clearSessionIfNeeded() {
+    if (_isClearingSession) return;
+    _isClearingSession = true;
+    DioClient()
+        .clearToken()
+        .then((_) => DioClient().clearUserName())
+        .whenComplete(() => _isClearingSession = false);
   }
 
   Future<void> setToken(String token) async {
@@ -138,18 +178,4 @@ class DioClient {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(AppConstants.userNameKey);
   }
-
-  // /// Build an Accept-Language header matching the device locale,
-  // /// e.g. "en-US,en;q=0.9,id-ID;q=0.8,id;q=0.7".
-  // String _acceptLanguage() {
-  //   String locale;
-  //   try {
-  //     locale = Platform.localeName;
-  //   } catch (_) {
-  //     locale = 'en-US';
-  //   }
-  //   final lang = locale.replaceAll('_', '-');
-  //   final short = lang.split('-').first;
-  //   return '$lang,$short;q=0.9';
-  // }
 }
