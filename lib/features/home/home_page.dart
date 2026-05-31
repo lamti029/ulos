@@ -6,7 +6,7 @@ import '../../core/services/dio_client.dart';
 import '../../core/utils/jwt_utils.dart';
 import '../profile/profile_page.dart';
 
-import '../../core/models/survey_model.dart';
+import '../../core/models/survey.dart';
 import '../../core/services/survey_service.dart';
 import 'survey_cache_service.dart';
 import 'sub_menu_survey_page.dart';

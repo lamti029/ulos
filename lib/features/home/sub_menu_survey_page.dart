@@ -7,7 +7,7 @@ import '../pemeriksa/petugas_absensi_page.dart';
 import '../tracking/tracking_page.dart';
 import 'home_page.dart';
 
-import '../../core/models/survey_model.dart';
+import '../../core/models/survey.dart';
 
 class SubMenuSurveyPage extends StatelessWidget {
   final SurveyModel survey;

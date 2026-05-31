@@ -1,7 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:ulos/core/models/survey_model.dart';
+import 'package:ulos/core/models/survey.dart';
 
 import '../../core/services/dio_client.dart';
 

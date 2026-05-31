@@ -1,5 +1,5 @@
 import '../services/dio_client.dart';
-import '../models/survey_model.dart';
+import '../models/survey.dart';
 import '../utils/jwt_utils.dart';
 
 class SurveyService {

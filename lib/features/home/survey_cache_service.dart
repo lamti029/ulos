@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../core/models/survey_model.dart';
+import '../../core/models/survey.dart';
 import '../../core/services/survey_service.dart';
 
 class SurveyCacheService {
