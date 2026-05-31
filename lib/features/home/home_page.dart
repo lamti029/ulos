@@ -1,14 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:geolocator/geolocator.dart';
 import 'dart:async';
 import '../../core/constants/app_colors.dart';
 import '../../core/services/dio_client.dart';
-import '../../core/services/security_check_service.dart';
 import '../../core/utils/jwt_utils.dart';
 import '../profile/profile_page.dart';
-import '../tracking/tracking_page.dart';
-import '../history/history_page.dart';
+
+import '../../core/models/survey_model.dart';
+import '../../core/services/survey_service.dart';
+import 'survey_cache_service.dart';
+import 'sub_menu_survey_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -19,25 +20,21 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage>
     with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
-  bool _isChecking = false;
   String _userName = 'Pengguna';
   Timer? _trackingTimer;
+
+  final SurveyService _surveyService = SurveyService();
+  List<SurveyModel> _surveys = const [];
+  int? _selectedSurveiId;
+  bool _isLoadingSurveys = true;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadUserName();
-    _checkTrackingStatus();
-    _startTrackingPolling();
-  }
-
-  void _startTrackingPolling() {
-    _trackingTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
-      if (mounted) {
-        setState(() {});
-      }
-    });
+    _loadSurveysFromCacheThenMaybeRefresh();
+    // _checkTrackingStatus();
   }
 
   @override
@@ -69,12 +66,14 @@ class _HomePageState extends State<HomePage>
 
   Future<void> _loadUserName() async {
     var name = await DioClient().getUserName();
+
     if (name == null || name.isEmpty) {
       name = await JwtUtils.getUserName();
       if (name != null && name.isNotEmpty) {
         await DioClient().setUserName(name);
       }
     }
+
     if (mounted) {
       setState(() {
         _userName = name ?? 'Pengguna';
@@ -82,55 +81,55 @@ class _HomePageState extends State<HomePage>
     }
   }
 
-  Future<void> _navigateToTracking(BuildContext context) async {
-    if (_isChecking) return;
-    setState(() => _isChecking = true);
+  Future<void> _loadSurveysFromCacheThenMaybeRefresh({
+    bool force = false,
+  }) async {
+    setState(() {
+      _isLoadingSurveys = true;
+    });
 
     try {
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          if (!context.mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Izin lokasi diperlukan untuk melanjutkan.'),
-              backgroundColor: AppColors.error,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-          return;
-        }
-      }
+      final cached = await SurveyCacheService.loadCachedSurveys();
 
-      if (permission == LocationPermission.deniedForever) {
-        if (!context.mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Access to location services is restricted.\\nYou can grant permission manually in the app settings.',
-            ),
-            backgroundColor: AppColors.error,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        return;
-      }
+      if (!mounted) return;
+      setState(() {
+        _surveys = cached;
+        _selectedSurveiId = cached.isNotEmpty ? cached.first.id : null;
+        _isLoadingSurveys = false;
+      });
 
-      final securityResult = await SecurityCheckService.performChecks();
+      // Requirement: refresh survei hanya manual (tidak auto-refresh).
+      // Tombol manual dibatasi: paling cepat 1x per jam.
+      if (!force) return;
 
-      if (!context.mounted) return;
+      final canRefresh = await SurveyCacheService.canRefreshNow(force: force);
+      if (!canRefresh) return;
 
-      if (!securityResult.isSecure) {
-        _showSecurityWarning(context, securityResult.warnings);
-        return;
-      }
+      final fresh = await _surveyService.fetchSurveys();
 
-      Navigator.of(
-        context,
-      ).push(MaterialPageRoute(builder: (_) => const TrackingPage()));
-    } finally {
-      if (mounted) setState(() => _isChecking = false);
+      if (!mounted) return;
+      setState(() {
+        _surveys = fresh;
+        _selectedSurveiId = fresh.isNotEmpty ? fresh.first.id : null;
+        _isLoadingSurveys = false;
+      });
+
+      await SurveyCacheService.saveSurveysToCache(fresh);
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        // Keep whatever we already had (possibly cached).
+        _isLoadingSurveys = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Gagal memuat survei: $e'),
+          backgroundColor: AppColors.error,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
@@ -180,16 +179,24 @@ class _HomePageState extends State<HomePage>
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Ulos'),
+        title: const Text('ULOS'),
+        leading: IconButton(
+          icon: const Icon(Icons.home),
+          tooltip: 'Home',
+          onPressed: () {},
+        ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.person_outline),
-            onPressed: () => Navigator.of(
-              context,
-            ).push(MaterialPageRoute(builder: (_) => const ProfilePage())),
+            icon: const Icon(Icons.person_outline_rounded),
+            onPressed: () {
+              Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const ProfilePage()));
+            },
             tooltip: 'Profile',
           ),
         ],
@@ -264,53 +271,70 @@ class _HomePageState extends State<HomePage>
                       .fadeIn(duration: 600.ms)
                       .slideY(begin: 0.2, end: 0, duration: 600.ms),
                   const SizedBox(height: 28),
-                  Text(
-                    'Menu',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ).animate().fadeIn(duration: 500.ms, delay: 200.ms),
-                  const SizedBox(height: 16),
-                  _MenuCard(
-                        icon: Icons.gps_fixed_rounded,
-                        iconColor: AppColors.success,
-                        iconBgColor: AppColors.success.withAlpha(26),
-                        title: 'Live Tracking',
-                        subtitle:
-                            'Track your location in real-time with target destinations',
-                        onTap: _isChecking
-                            ? null
-                            : () => _navigateToTracking(context),
-                      )
-                      .animate()
-                      .fadeIn(duration: 600.ms, delay: 300.ms)
-                      .slideX(
-                        begin: -0.2,
-                        end: 0,
-                        duration: 600.ms,
-                        delay: 300.ms,
+
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Daftar Survei',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ).animate().fadeIn(duration: 400.ms, delay: 100.ms),
                       ),
-                  const SizedBox(height: 16),
-                  _MenuCard(
-                        icon: Icons.history_rounded,
-                        iconColor: AppColors.warning,
-                        iconBgColor: AppColors.warning.withAlpha(26),
-                        title: 'History Tracking',
-                        subtitle: 'View your past tracking sessions and routes',
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const HistoryPage(),
-                          ),
-                        ),
-                      )
-                      .animate()
-                      .fadeIn(duration: 600.ms, delay: 400.ms)
-                      .slideX(
-                        begin: -0.2,
-                        end: 0,
-                        duration: 600.ms,
-                        delay: 400.ms,
+                      const SizedBox(width: 12),
+                      FilledButton.icon(
+                        icon: const Icon(Icons.sync_rounded),
+                        label: const Text('Refresh'),
+                        onPressed: () async {
+                          await _loadSurveysFromCacheThenMaybeRefresh(
+                            force: true,
+                          );
+                        },
                       ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  if (_isLoadingSurveys)
+                    const Center(child: CircularProgressIndicator())
+                  else if (_surveys.isNotEmpty)
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _surveys.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 16),
+                      itemBuilder: (context, index) {
+                        final s = _surveys[index];
+                        return _SurveyMenuCard(
+                          icon: Icons.map_outlined,
+                          iconColor: AppColors.background,
+                          iconBgColor: AppColors.background.withAlpha(26),
+                          cardBgColor: AppColors.secondary,
+                          title: s.displayName,
+                          subtitle: 'Tap to open tracking menu',
+
+                          onTap: () {
+                            setState(() => _selectedSurveiId = s.id);
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => SubMenuSurveyPage(survey: s),
+                              ),
+                            );
+                          },
+                          animateDelayMs: 100 + (index * 60),
+                        );
+                      },
+                    )
+                  else
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Text('Tidak ada survei tersedia'),
+                    ),
+
                   const SizedBox(height: 32),
                 ],
+
+                // ],
               ),
             ),
           ),
@@ -327,6 +351,12 @@ class _MenuCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final VoidCallback? onTap;
+  final Color? titleColor;
+  final Color? subtitleColor;
+
+  /// Background card color.
+  /// Set to match Splash theme (primary/secondary) instead of default Card color.
+  final Color cardBgColor;
 
   const _MenuCard({
     required this.icon,
@@ -335,11 +365,15 @@ class _MenuCard extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.onTap,
+    required this.cardBgColor,
+    this.titleColor,
+    this.subtitleColor,
   });
 
   @override
   Widget build(BuildContext context) {
     return Card(
+      color: cardBgColor,
       elevation: 2,
       shadowColor: AppColors.cardShadow,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -368,6 +402,7 @@ class _MenuCard extends StatelessWidget {
                       title,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.w600,
+                        color: titleColor,
                       ),
                     ),
                     const SizedBox(height: 4),
@@ -376,6 +411,7 @@ class _MenuCard extends StatelessWidget {
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         fontSize: 13,
                         height: 1.4,
+                        color: subtitleColor,
                       ),
                     ),
                   ],
@@ -390,5 +426,54 @@ class _MenuCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _SurveyMenuCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final Color iconBgColor;
+  final Color cardBgColor;
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
+  final int animateDelayMs;
+
+  const _SurveyMenuCard({
+    required this.icon,
+    required this.iconColor,
+    required this.iconBgColor,
+    required this.cardBgColor,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    required this.animateDelayMs,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cardBgColor = AppColors.secondary;
+    final titleColor = Colors.white;
+    final subtitleColor = Colors.white;
+
+    return _MenuCard(
+          icon: icon,
+          iconColor: iconColor,
+          iconBgColor: iconBgColor,
+          cardBgColor: cardBgColor,
+          title: title,
+          subtitle: subtitle,
+          titleColor: titleColor,
+          subtitleColor: subtitleColor,
+          onTap: onTap,
+        )
+        .animate()
+        .fadeIn(duration: 500.ms, delay: animateDelayMs.ms)
+        .slideX(
+          begin: -0.2,
+          end: 0,
+          duration: 500.ms,
+          delay: animateDelayMs.ms,
+        );
   }
 }

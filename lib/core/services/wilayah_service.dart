@@ -2,6 +2,9 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+
+// NOTE: Removed unused WilayahService helpers/variables to satisfy analyzer.
+
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/constants/api_constants.dart';
@@ -24,7 +27,7 @@ class WilayahService {
 
   // Serialization helpers
   static Map<String, double> _latLngToMap(LatLng point) {
-    return {'lat': point.latitude, 'lng': point.longitude};
+    return <String, double>{'lat': point.latitude, 'lng': point.longitude};
   }
 
   static LatLng _mapToLatLng(Map<String, dynamic> map) {
@@ -41,14 +44,15 @@ class WilayahService {
 
   static Map<String, dynamic> _polygonToMap(Polygon polygon) {
     final color = polygon.color ?? AppColors.primary.withAlpha(51);
-    final borderColor = polygon.borderColor ?? AppColors.primary;
-    debugPrint(
-      '[WilayahService] Serializing colors: color=${color.value}, borderColor=${borderColor.value}',
-    );
+
+    // Lint fix: polygon.color is not nullable in practice; avoid dead null-aware.
+
+    final borderColor = polygon.borderColor;
+
     return {
       'points': _pointsToList(polygon.points),
-      'color': color.value,
-      'borderColor': borderColor.value,
+      'color': color.toARGB32(),
+      'borderColor': borderColor.toARGB32(),
       'borderStrokeWidth': polygon.borderStrokeWidth,
     };
   }
@@ -223,7 +227,8 @@ class WilayahService {
     _wilayahPolygons = polygons;
     _wilayahData = data.map((e) => Map<String, dynamic>.from(e)).toList();
     _wilayahSubSLSIds = data
-        .map((item) => item['id_subsls']?.toString() ?? '')
+        .map((item) => item['id_subsls']?.toString())
+        .whereType<String>()
         .where((id) => id.isNotEmpty)
         .toList();
   }

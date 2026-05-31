@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "988871824702",
+    "project_id": "ulos-edf33",
+    "storage_bucket": "ulos-edf33.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:988871824702:android:148d2f2d8f457b52d4886f",
+        "android_client_info": {
+          "package_name": "com.bps.ulos"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCKZ6EXYfzvjC0wjD07RyK6JZhdd9zDj0c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

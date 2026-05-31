@@ -55,7 +55,7 @@ Dukungan otomatis switching **Development** (`dev`) ↔ **Production** (`prod`).
 BASE_URL=https://trackingapi.bps.web.id
 
 # Background Location Service Configuration
-DISTANCE_FILTER_METERS=5.0 (Minimal radius pergerakan dari titik lokasi sebelumnya)
+DISTANCE_FILTER_METERS=30 (Minimal radius pergerakan dari titik lokasi sebelumnya)
 LOCATION_INTERVAL_SECONDS=10
 FLUSH_INTERVAL_SECONDS=60
 SYNC_INTERVAL_SECONDS=300

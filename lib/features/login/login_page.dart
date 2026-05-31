@@ -5,9 +5,13 @@ import '../../core/constants/app_colors.dart';
 import '../../core/constants/api_constants.dart';
 import '../../core/services/dio_client.dart';
 import '../home/home_page.dart';
+import '../home/survey_cache_service.dart';
+import '../../core/services/survey_service.dart';
+
 import '../../core/utils/validation_utils.dart';
 import '../../core/services/wilayah_service.dart';
 import '../register/register_page.dart';
+import '../../core/utils/app_version_utils.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -22,6 +26,24 @@ class _LoginPageState extends State<LoginPage> {
   final _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
+
+  String? _appVersionText;
+  bool _isLoadingAppVersion = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    final v = await AppVersionUtils.getAppVersionText();
+    if (!mounted) return;
+    setState(() {
+      _appVersionText = v;
+      _isLoadingAppVersion = false;
+    });
+  }
 
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
@@ -44,9 +66,24 @@ class _LoginPageState extends State<LoginPage> {
           await DioClient().setToken(token);
           // Save user name if available
           final userName = data?['name'] as String?;
+          final email = data?['email'] as String?;
           if (userName != null && userName.isNotEmpty) {
             await DioClient().setUserName(userName);
           }
+          debugPrint('email = $email');
+          if (email != null && email.isNotEmpty) {
+            await DioClient().setEmail(email);
+          }
+          // Fetch surveys once after login + cache them
+          try {
+            await SurveyCacheService.refreshCacheIfNeeded(
+              surveyService: SurveyService(),
+              force: true,
+            );
+          } catch (_) {
+            // ignore cache refresh errors; Home will fallback to cache/auto refresh
+          }
+
           // Fetch wilayah and target points once after login
           await WilayahService.init();
           if (!mounted) return;
@@ -294,6 +331,26 @@ class _LoginPageState extends State<LoginPage> {
                   ],
                 ),
               ),
+
+              const SizedBox(height: 24),
+
+              // Footer app version
+              Center(
+                child: _isLoadingAppVersion
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text(
+                        _appVersionText ?? 'v-',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+              ),
+
+              const SizedBox(height: 8),
             ],
           ),
         ),

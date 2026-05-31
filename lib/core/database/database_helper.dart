@@ -20,7 +20,38 @@ class DatabaseHelper {
     const dbName = 'ulos.db';
     final path = join(dbPath.path, dbName);
 
-    return await openDatabase(path, version: 1, onCreate: _createDB);
+    return await openDatabase(
+      path,
+      version: 3,
+
+      onCreate: _createDB,
+      onUpgrade: (db, oldVersion, newVersion) async {
+        // Migrate existing installs to the latest schema.
+        // v1 -> v2: add battery_level column.
+        if (oldVersion < 2) {
+          final columns = await db.rawQuery('PRAGMA table_info(locations)');
+          final hasBatteryLevel = columns.any(
+            (c) => c['name'] == 'battery_level',
+          );
+          if (!hasBatteryLevel) {
+            await db.execute(
+              'ALTER TABLE locations ADD COLUMN battery_level INTEGER',
+            );
+          }
+        }
+
+        // v2 -> v3: add session_id column.
+        if (oldVersion < 3) {
+          final columns = await db.rawQuery('PRAGMA table_info(locations)');
+          final hasSessionId = columns.any((c) => c['name'] == 'session_id');
+          if (!hasSessionId) {
+            await db.execute(
+              'ALTER TABLE locations ADD COLUMN session_id INTEGER',
+            );
+          }
+        }
+      },
+    );
   }
 
   Future _createDB(Database db, int version) async {
@@ -35,6 +66,8 @@ class DatabaseHelper {
       speed REAL,
       is_mocked INTEGER DEFAULT 0,
       survei_id INTEGER,
+      session_id INTEGER,
+      battery_level INTEGER,
       is_synced INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now'))
     )

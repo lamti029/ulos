@@ -1,25 +1,73 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:ulos/core/services/background_service_handler.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/scheduler_service.dart';
+import '../../core/services/env_service.dart';
+
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/services/wilayah_service.dart';
 import '../../core/services/dio_client.dart';
+import '../../core/services/location_repository.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
-// Token bearer dipakai untuk request absensi/start & absensi/stop.
-// Diambil dari token login yang tersimpan.
+import '../../core/models/survey_model.dart';
+import '../../core/controllers/tracking_controller.dart';
+import '../pemeriksa/petugas_tracking_page.dart';
+import '../../core/models/petugas_location.dart' as petugas_location;
+
+class _PetugasListItem {
+  final int? id;
+  final String name;
+  final String? email;
+  final String? role;
+
+  const _PetugasListItem({required this.name, this.id, this.email, this.role});
+
+  factory _PetugasListItem.fromJson(Map<String, dynamic> json) {
+    int? parseInt(dynamic v) {
+      if (v == null) return null;
+      if (v is int) return v;
+      return int.tryParse(v.toString());
+    }
+
+    // Backend beberapa kali bisa mengirim key nama berbeda.
+    final rawName = [
+      json['name'],
+      json['nama'],
+      json['nama_petugas'],
+      json['namaPetugas'],
+      json['petugas_nama'],
+      json['full_name'],
+      json['fullName'],
+      json['petugasName'],
+    ].where((e) => e != null).toList();
+
+    final name = rawName.isEmpty ? '' : rawName.first.toString().trim();
+
+    return _PetugasListItem(
+      id: parseInt(json['id'] ?? json['petugas_id']),
+      name: name.isNotEmpty ? name : 'Tanpa Nama',
+      email: json['email']?.toString(),
+      role: json['role']?.toString(),
+    );
+  }
+}
 
 class TrackingPage extends StatefulWidget {
-  const TrackingPage({super.key});
+  final SurveyModel survey;
+
+  const TrackingPage({super.key, required this.survey});
 
   @override
   State<TrackingPage> createState() => _TrackingPageState();
@@ -27,6 +75,59 @@ class TrackingPage extends StatefulWidget {
 
 class _TrackingPageState extends State<TrackingPage>
     with WidgetsBindingObserver {
+  // Role-based access for FAB petugas ditentukan secara live dari SurveyModel.
+  bool get _showTrackingPetugasFab {
+    final rawRole = widget.survey.roleInSurvei?.toString();
+    // Normalisasi lebih ketat: buang bracket/quote yang mungkin ikut terbawa backend.
+    final role = rawRole
+        ?.toLowerCase()
+        .trim()
+        .replaceAll('[', '')
+        .replaceAll(']', '')
+        .replaceAll('"', '')
+        .replaceAll("'", '');
+
+    // Hanya role yang benar-benar 'pemeriksa' yang boleh melihat FAB.
+    final show = role == 'pemeriksa';
+
+    // Debug: pastikan nilai role yang diterima benar.
+    debugPrint(
+      '[TrackingPage] roleInSurvei="${widget.survey.roleInSurvei}" (normalized="$role") => _showTrackingPetugasFab=$show',
+    );
+
+    return show;
+  }
+
+  static const Duration _trackingMaxDuration = Duration(hours: 3);
+
+  static const String _prefsTrackingStartedAtMs = 'tracking_started_at_ms';
+  static const String _prefsTracking3hLastReminderAtMs =
+      'tracking_3h_last_reminder_at_ms';
+
+  static const Duration _reminderCooldown = Duration(minutes: 30);
+
+  final FlutterLocalNotificationsPlugin _localNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
+
+  AndroidNotificationDetails? _androidDetails;
+  NotificationDetails? _notificationDetails;
+
+  int get _surveiId => widget.survey.id;
+
+  Timer? _trackingStatusTimer;
+
+  // Petugas tracking layer (toggle via FAB)
+  bool _showPetugasLayer = false;
+  bool _isPetugasLoading = false;
+
+  // Filters (opsional; dari requirement user: cukup layer tampilan posisi)
+  final List<_PetugasListItem> _petugas = [];
+  int? _selectedPetugasId;
+
+  final List<petugas_location.PetugasLocation> _petugasLocations = [];
+  List<Marker> _petugasMarkers = const [];
+  List<Polyline> _petugasPolylines = const [];
+
   List<Polygon> get _safeWilayahPolygons {
     // flutter_map PolygonLayer will throw if any LatLng is NaN/Infinity.
     // Filter polygons/points defensively.
@@ -57,34 +158,102 @@ class _TrackingPageState extends State<TrackingPage>
 
   bool _isDisposed = false;
   final LocationService _locationService = LocationService();
+
   late final SchedulerService _schedulerService;
+
   final MapController _mapController = MapController();
 
   LatLng? _currentPosition;
 
-  // Target points from initialization (wilayah service)
   List<Map<String, dynamic>> _initialTargetPoints = [];
 
-  // Target points fetched nearby (nearby endpoint after locate / switch)
   List<Map<String, dynamic>> _nearbyTargetPoints = [];
   bool _showNearbyTargetPoints = false;
 
-  // Warna marker nearby: primary(biru) dan initial:error(merah)
-
-  // Target points initial (berasal dari WilayahService)
   List<Map<String, dynamic>> _targetPoints = [];
 
-  // Target points nearby (hasil endpoint /nearby)
   List<Map<String, dynamic>> _targetPointsNearby = [];
 
-  // Nearby caching to avoid hitting API too often
   LatLng? _lastNearbyCenter;
   bool _isNearbyLoading = false;
   final double _nearbyMinDistanceMeters = 100.0;
 
   Map<String, dynamic>? _selectedTargetPoint;
   bool _isLoading = true;
-  bool _isTracking = false;
+  bool _isLocationActive = false;
+  bool _isSyncActive = false;
+
+  bool get _isTracking => _getIsTrackingForThisSurvey();
+
+  // Ensure Start/Stop button matches runtime tracking state.
+  // Source of truth: lock id set saat start tracking.
+  bool _getIsTrackingForThisSurvey() =>
+      widget.survey.id == TrackingController.instance.activeSurveiId;
+
+  Future<bool> _isOtherSurveiLockedAndRunning() async {
+    final running = await SchedulerService.isRunning;
+    if (!running) return false;
+
+    // Jika lock belum terpasang, kita tidak kunci aksi.
+    final lockId = TrackingController.instance.activeSurveiId;
+    if (lockId == null) return false;
+
+    // Survei lain tidak boleh start/stop.
+    return lockId != widget.survey.id;
+  }
+
+  Future<void> _ensureNoStaleBackgroundThenUpdateStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      bool isFirstLaunch =
+          prefs.getBool('is_first_launch_after_install') ?? true;
+
+      if (isFirstLaunch) {
+        debugPrint(
+          '[Tracking] Fresh install/update terdeteksi. Memaksa reset tracking state.',
+        );
+
+        await BackgroundServiceHandler.ensureNotRunning();
+
+        try {
+          await _schedulerService.stop();
+        } catch (_) {}
+
+        await prefs.setBool('is_first_launch_after_install', false);
+        await prefs.setBool('isTracking', false);
+      } else {
+        final schedulerRunningInitial = await SchedulerService.isRunning;
+        final bgRunningInitial = await BackgroundServiceHandler.isRunning();
+
+        if (bgRunningInitial && !schedulerRunningInitial) {
+          await BackgroundServiceHandler.ensureNotRunning();
+        }
+      }
+
+      final recheckCount = 3;
+      final recheckDelay = const Duration(milliseconds: 200);
+      bool stableBgRunning = false;
+
+      for (int i = 0; i < recheckCount; i++) {
+        await Future.delayed(recheckDelay);
+        final bg = await BackgroundServiceHandler.isRunning();
+        stableBgRunning = i == 0 ? bg : (stableBgRunning && bg);
+      }
+
+      final schedulerRunningFinal = await SchedulerService.isRunning;
+      if (!schedulerRunningFinal && stableBgRunning) {
+        await BackgroundServiceHandler.ensureNotRunning();
+      }
+    } catch (e) {
+      debugPrint(
+        '[_ensureNoStaleBackgroundThenUpdateStatus] ensureNotRunning error: $e',
+      );
+    }
+
+    await _updateTrackingStatus();
+  }
+
   bool _isStartLoading = false;
   bool _isStopLoading = false;
   int _locationInterval = AppConstants.defaultLocationInterval;
@@ -92,14 +261,133 @@ class _TrackingPageState extends State<TrackingPage>
   List<Polygon> _wilayahPolygons = [];
   List<Map<String, dynamic>> _wilayahData = [];
 
+  Future<void> _maybeShowTrackingOver3hPopup() async {
+    if (!mounted) return;
+    final prefs = await SharedPreferences.getInstance();
+
+    final schedulerRunning = await SchedulerService.isRunning;
+    if (!schedulerRunning) return;
+
+    final startedAtMs = prefs.getInt(_prefsTrackingStartedAtMs);
+    if (startedAtMs == null) return;
+
+    final startedAt = DateTime.fromMillisecondsSinceEpoch(startedAtMs);
+    final elapsed = DateTime.now().difference(startedAt);
+
+    if (elapsed < _trackingMaxDuration) return;
+
+    final alreadyShown = prefs.getBool('tracking_3h_popup_shown') ?? false;
+    if (alreadyShown) return;
+
+    await prefs.setBool('tracking_3h_popup_shown', true);
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Tracking > 3 jam'),
+          content: const Text(
+            'Tracking Anda sudah berjalan lebih dari 3 jam. '
+            'Apakah akan melanjutkan tracking atau berhenti?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Lanjutkan'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                // Stop tracking using the existing flow.
+                await _toggleTracking();
+              },
+              child: const Text('Berhenti Tracking'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _maybeTriggerBackgroundReminder() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final schedulerRunning = await SchedulerService.isRunning;
+    if (!schedulerRunning) return;
+
+    final startedAtMs = prefs.getInt(_prefsTrackingStartedAtMs);
+    if (startedAtMs == null) return;
+
+    final startedAt = DateTime.fromMillisecondsSinceEpoch(startedAtMs);
+    final elapsed = DateTime.now().difference(startedAt);
+    if (elapsed < _trackingMaxDuration) return;
+
+    final lastReminderMs = prefs.getInt(_prefsTracking3hLastReminderAtMs) ?? 0;
+    final lastReminder = lastReminderMs == 0
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(lastReminderMs);
+
+    if (lastReminder != null) {
+      final since = DateTime.now().difference(lastReminder);
+      if (since < _reminderCooldown) return;
+    }
+
+    // Initialize notification details lazily.
+    _androidDetails ??= const AndroidNotificationDetails(
+      'tracking_reminders',
+      'Tracking Reminders',
+      channelDescription: 'Reminder saat tracking berjalan lama',
+      importance: Importance.high,
+      priority: Priority.high,
+      playSound: false,
+    );
+
+    _notificationDetails ??= NotificationDetails(
+      android: _androidDetails,
+      iOS: const DarwinNotificationDetails(),
+    );
+
+    final now = DateTime.now();
+    final notifId = now.millisecondsSinceEpoch.remainder(1000000);
+
+    await _localNotificationsPlugin.show(
+      notifId,
+      'Reminder Tracking',
+      'Tracking Anda sudah lebih dari 3 jam. '
+          'Pertimbangkan untuk berhenti agar sesuai kebutuhan.',
+      _notificationDetails!,
+    );
+
+    await prefs.setInt(
+      _prefsTracking3hLastReminderAtMs,
+      now.millisecondsSinceEpoch,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _schedulerService = SchedulerService.instance;
-    _updateTrackingStatus();
+
+    _ensureNoStaleBackgroundThenUpdateStatus();
+
+    // FAB petugas (tracking petugas) ditentukan via getter berbasis role.
+    // Tidak perlu menyimpan _isPemeriksa di state.
+    TrackingController.instance.init();
+    debugPrint('isTracking =  ${_getIsTrackingForThisSurvey()}');
+    debugPrint(
+      'controller isTracking =  ${TrackingController.instance.isTrackingActive}',
+    );
     _initializeData();
     _getCurrentLocation();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _maybeShowTrackingOver3hPopup();
+      await _maybeTriggerBackgroundReminder();
+    });
   }
 
   Future<void> _initializeData() async {
@@ -122,10 +410,19 @@ class _TrackingPageState extends State<TrackingPage>
   }
 
   Future<void> _updateTrackingStatus() async {
-    final isRunning = await SchedulerService.isRunning;
+    final schedulerRunning = await SchedulerService.isRunning;
+
+    final locationActive = schedulerRunning;
+
+    // sync is active only when location is active and sync interval is enabled (>0)
+    final syncActive = locationActive && EnvService.syncIntervalSeconds > 0;
+
     if (mounted) {
       setState(() {
-        _isTracking = isRunning;
+        _isLocationActive = locationActive;
+        _isSyncActive = syncActive;
+        // Keep SurveyModel in sync with actual tracking runtime state.
+        widget.survey.isTrackingActive = locationActive && syncActive;
       });
     }
   }
@@ -173,7 +470,6 @@ class _TrackingPageState extends State<TrackingPage>
       _isLoading = false;
     });
 
-    // MapController requires FlutterMap to be rendered at least once.
     if (_mapHasRendered) {
       _mapController.move(currentLatLng, 15);
     }
@@ -300,13 +596,13 @@ class _TrackingPageState extends State<TrackingPage>
   Future<List<Map<String, dynamic>>> _fetchNearbyTargetPoints({
     required double lat,
     required double lng,
+    required int surveiId,
   }) async {
     const int limit = 20;
 
     final allPoints = <Map<String, dynamic>>[];
 
     try {
-      // Note: DioClient is already configured with baseUrl from EnvService.
       final dioClient = DioClient();
 
       final firstResponse = await dioClient.dio.get(
@@ -315,6 +611,7 @@ class _TrackingPageState extends State<TrackingPage>
           'lat': lat,
           'lng': lng,
           'radius': 100,
+          'survei_id': surveiId,
           'page': 1,
           'limit': limit,
         },
@@ -347,6 +644,7 @@ class _TrackingPageState extends State<TrackingPage>
                 'lat': lat,
                 'lng': lng,
                 'radius': 100,
+                'survei_id': surveiId,
                 'page': page,
                 'limit': limit,
               },
@@ -418,7 +716,7 @@ class _TrackingPageState extends State<TrackingPage>
       // DioClient interceptor otomatis menempelkan Authorization dari token login.
       final res = await dioClient.dio.post(
         '/api/absensi/$action',
-        data: '',
+        data: {'survei_id': _surveiId},
         options: Options(headers: const {'accept': 'application/json'}),
       );
 
@@ -433,12 +731,32 @@ class _TrackingPageState extends State<TrackingPage>
   }
 
   Future<void> _toggleTracking() async {
+    final shouldLock = await _isOtherSurveiLockedAndRunning();
+    if (shouldLock) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Tracking sedang aktif pada survei lain. Start/Stop diblokir.',
+            ),
+            backgroundColor: AppColors.warning,
+          ),
+        );
+      }
+      return;
+    }
+
+    final battery = Battery();
     if (_isTracking) {
       // Stop tracking
       setState(() => _isStopLoading = true);
 
       try {
-        final position = await _locationService.getCurrentPosition();
+        // Stop flow jangan tergantung GPS terlalu lama.
+        final position = await _locationService.getCurrentPosition().timeout(
+          const Duration(seconds: 7),
+        );
+
         if (position != null) {
           final lastLocation = {
             'latitude': position.latitude,
@@ -447,16 +765,44 @@ class _TrackingPageState extends State<TrackingPage>
             'altitude': position.altitude,
             'speed': position.speed,
             'is_mocked': position.isMocked,
-            'survei_id': _selectedTargetPoint!['survei_id'] as int?,
+            'survei_id': _surveiId,
+
+            'battery_level': battery?.batteryLevel,
             'timestamp': position.timestamp.toUtc().toIso8601String(),
           };
           await _schedulerService.sendImmediateBatch(locations: [lastLocation]);
         }
+      } on TimeoutException {
+        debugPrint('[_toggleTracking] stop timeout: GPS too slow');
       } catch (e) {
         debugPrint('[_toggleTracking] error sending last location: $e');
       } finally {
-        await _schedulerService.stop();
+        // Batasi total waktu tunggu stop di UI.
+        // Jika timeout, lanjut proses cleanup agar tombol stop tidak menggantung.
+        try {
+          await _schedulerService.stop().timeout(const Duration(seconds: 8));
+        } on TimeoutException {
+          debugPrint('[_toggleTracking] scheduler stop timeout');
+        } catch (e) {
+          debugPrint('[_toggleTracking] scheduler stop error: $e');
+        }
+
         await _postAbsensi('stop');
+
+        // Update SurveyModel runtime status.
+        widget.survey.isTrackingActive = false;
+
+        if (TrackingController.instance.activeSurveiId == widget.survey.id) {
+          TrackingController.instance.clear();
+        }
+
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('is_tracking', false);
+
+        await prefs.remove(_prefsTrackingStartedAtMs);
+        await prefs.remove('tracking_3h_popup_shown');
+        await prefs.remove(_prefsTracking3hLastReminderAtMs);
+
         _updateTrackingStatus();
         if (mounted) {
           setState(() => _isStopLoading = false);
@@ -465,7 +811,6 @@ class _TrackingPageState extends State<TrackingPage>
       return;
     }
 
-    // Start tracking
     setState(() => _isStartLoading = true);
 
     try {
@@ -482,6 +827,31 @@ class _TrackingPageState extends State<TrackingPage>
         setState(() => _isStartLoading = false);
         return;
       }
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('is_tracking', true);
+
+      // Update SurveyModel runtime status.
+      widget.survey.isTrackingActive = true;
+      TrackingController.instance.lockTo(widget.survey.id);
+
+      // Save tracking start time for >3 hours checks/reminders.
+      await prefs.setInt(
+        _prefsTrackingStartedAtMs,
+        DateTime.now().millisecondsSinceEpoch,
+      );
+      await prefs.remove('tracking_3h_popup_shown');
+      await prefs.remove(_prefsTracking3hLastReminderAtMs);
+
+      // Optimization: clean up synced local data from yesterday to keep SQLite smaller.
+      try {
+        await LocationRepository().deleteSyncedForDay(
+          DateTime.now().subtract(const Duration(days: 1)),
+        );
+      } catch (e) {
+        debugPrint(
+          '[_toggleTracking] cleanup yesterday synced rows failed: $e',
+        );
+      }
 
       await _postAbsensi('start');
 
@@ -492,6 +862,7 @@ class _TrackingPageState extends State<TrackingPage>
         'altitude': position.altitude,
         'speed': position.speed,
         'is_mocked': position.isMocked,
+        'battery_level': battery.batteryLevel,
         'timestamp': position.timestamp.toUtc().toIso8601String(),
       };
 
@@ -500,6 +871,7 @@ class _TrackingPageState extends State<TrackingPage>
       _schedulerService.start(
         locationIntervalSeconds: _locationInterval,
         batchIntervalSeconds: _batchInterval,
+        surveiId: _surveiId,
       );
 
       _updateTrackingStatus();
@@ -732,7 +1104,7 @@ class _TrackingPageState extends State<TrackingPage>
     );
   }
 
-  void _showTargetPoitsNearby() async {
+  void _showTargetPointsNearby() async {
     // Only now fetch & show nearby target points
     final position = await _locationService.getCurrentPosition();
     if (!mounted) return;
@@ -771,6 +1143,7 @@ class _TrackingPageState extends State<TrackingPage>
         final nearby = await _fetchNearbyTargetPoints(
           lat: currentLatLng.latitude,
           lng: currentLatLng.longitude,
+          surveiId: _surveiId,
         );
 
         if (!mounted) return;
@@ -792,6 +1165,302 @@ class _TrackingPageState extends State<TrackingPage>
         });
       }
     }
+  }
+
+  bool _isValidLatLng(double? lat, double? lng) {
+    if (lat == null || lng == null) return false;
+    if (!lat.isFinite || !lng.isFinite) return false;
+    return lat.abs() <= 90 && lng.abs() <= 180;
+  }
+
+  String? _formatTimestamp(DateTime? dt) {
+    if (dt == null) return null;
+    return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year} '
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+
+  String _formatApiDateTime(DateTime dt) {
+    // Backend parse: DD/MM/YYYY HH:mm:ss
+    final dd = dt.day.toString().padLeft(2, '0');
+    final mm = dt.month.toString().padLeft(2, '0');
+    final yyyy = dt.year.toString();
+    final hh = dt.hour.toString().padLeft(2, '0');
+    final min = dt.minute.toString().padLeft(2, '0');
+    final ss = dt.second.toString().padLeft(2, '0');
+    return '$dd/$mm/$yyyy $hh:$min:$ss';
+  }
+
+  Future<void> _fetchPetugasIfNeeded() async {
+    if (_petugas.isNotEmpty) return;
+    if (_isPetugasLoading) return;
+
+    setState(() => _isPetugasLoading = true);
+    try {
+      final res = await DioClient().dio.get(
+        '/api/pemeriksa/petugas',
+        queryParameters: {'page': 1, 'limit': 20, 'survei_id': _surveiId},
+      );
+
+      debugPrint(
+        '[Tracking] /api/pemeriksa/petugas status=${res.statusCode} payloadType=${res.data.runtimeType}',
+      );
+
+      if (res.statusCode != 200) {
+        throw Exception('Request failed: ${res.statusCode}');
+      }
+
+      final payload = res.data;
+      final List<dynamic> rawList =
+          (payload is Map<String, dynamic> && payload['data'] is List)
+          ? (payload['data'] as List<dynamic>)
+          : payload is List
+          ? payload
+          : [];
+
+      setState(() {
+        if (_selectedPetugasId == null && _petugas.isNotEmpty) {
+          _selectedPetugasId = _petugas.first.id;
+        }
+      });
+    } catch (e) {
+    } finally {
+      if (mounted) setState(() => _isPetugasLoading = false);
+    }
+  }
+
+  Future<void> _fetchPetugasLocationsLatestOrFiltered() async {
+    if (!mounted) return;
+
+    try {
+      // Default
+      if (_selectedPetugasId == null) {
+        final res = await DioClient().dio.get(
+          '/api/pemeriksa/lokasi/terbaru',
+          queryParameters: {'survei_id': _surveiId},
+        );
+        if (res.statusCode != 200 && res.statusCode != 201) {
+          throw Exception('Request failed: ${res.statusCode}');
+        }
+
+        final data = res.data;
+        final listRaw = data is Map<String, dynamic>
+            ? (data['data'] ?? [])
+            : [];
+        final rawList = listRaw is List ? listRaw : [];
+
+        final parsed = rawList
+            .whereType<Map<String, dynamic>>()
+            .map(
+              (e) => petugas_location.PetugasLocation.fromJson(
+                e as Map<String, dynamic>,
+              ),
+            )
+            .where((p) => _isValidLatLng(p.latitude, p.longitude))
+            .toList();
+
+        setState(() {
+          _petugasLocations
+            ..clear()
+            ..addAll(parsed);
+          _petugasMarkers = _buildPetugasMarkers();
+          _petugasPolylines = _buildPetugasPolylines();
+        });
+        return;
+      }
+
+      // Filter aktif (petugas saja)
+      final res = await DioClient().dio.get(
+        '/api/pemeriksa/lokasi',
+        queryParameters: {
+          'page': 1,
+          'limit': 50,
+          'petugas_id': _selectedPetugasId,
+          'survei_id': _surveiId,
+        },
+      );
+
+      if (res.statusCode != 200 && res.statusCode != 201) {
+        throw Exception('Request failed: ${res.statusCode}');
+      }
+
+      final data = res.data;
+      final listRaw = data is Map<String, dynamic> ? (data['data'] ?? []) : [];
+      final rawList = listRaw is List ? listRaw : [];
+
+      final parsed = rawList
+          .whereType<Map<String, dynamic>>()
+          .map(
+            (e) => petugas_location.PetugasLocation.fromJson(
+              e as Map<String, dynamic>,
+            ),
+          )
+          .where((p) => _isValidLatLng(p.latitude, p.longitude))
+          .toList();
+
+      setState(() {
+        _petugasLocations
+          ..clear()
+          ..addAll(parsed);
+        _petugasMarkers = _buildPetugasMarkers();
+        _petugasPolylines = _buildPetugasPolylines();
+      });
+    } catch (e) {
+      // if (mounted) setState(() => _petugasErrorMessage = e.toString());
+    }
+  }
+
+  Marker _buildPetugasMarker(petugas_location.PetugasLocation loc, int index) {
+    final lat = (loc.latitude ?? 0.0);
+    final lng = (loc.longitude ?? 0.0);
+    final nama = (loc.namaPetugas ?? 'Petugas').trim();
+    final timestampStr = _formatTimestamp(loc.timestamp);
+
+    final bool isMocked = loc.isMocked == true;
+
+    return Marker(
+      key: ValueKey('${loc.id ?? index}_$lat,$lng'),
+      point: LatLng(lat, lng),
+      width: 44,
+      height: 44,
+      child: GestureDetector(
+        onTap: () {
+          showDialog(
+            context: context,
+            builder: (context) {
+              return AlertDialog(
+                title: Stack(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(right: 40.0, top: 4.0),
+                      child: Text('Lokasi Petugas'),
+                    ),
+                    // Posisi tombol Close di pojok kanan atas title
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      child: GestureDetector(
+                        onTap: () => Navigator.pop(context),
+                        child: const Icon(
+                          Icons.close,
+                          color: Colors.red,
+                          size: 24,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                // title: Text(nama),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Nama: ${nama}'),
+                    if (timestampStr != null) Text('Waktu: $timestampStr'),
+                    // const SizedBox(height: 8),
+                    Text('Lat: ${lat.toStringAsFixed(6)}'),
+                    Text('Lng: ${lng.toStringAsFixed(6)}'),
+                    if (loc.accuracy != null)
+                      Text('Akurasi: ${loc.accuracy} m'),
+                    if (loc.batteryLevel != null)
+                      Text('Baterai: ${loc.batteryLevel}%'),
+                    Text('Mock: ${isMocked ? 'Ya' : 'Tidak'}'),
+                  ],
+                ),
+                actions: [
+                  if (loc.userId != null || loc.id != null)
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.track_changes),
+                      label: const Text('Track'),
+                      onPressed: () async {
+                        // Ambil petugasId untuk call API track (backend pakai petugas_id)
+                        final petugasId = (loc.userId ?? loc.id);
+                        if (petugasId == null) return;
+
+                        Navigator.pop(context);
+
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                PetugasTrackingPage(surveiId: _surveiId),
+                          ),
+                        );
+                      },
+                    ),
+                ],
+              );
+            },
+          );
+        },
+        child: Container(
+          decoration: BoxDecoration(
+            color: isMocked ? Colors.redAccent : Colors.blue,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 3),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withAlpha(60),
+                blurRadius: 10,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
+          child: const Icon(Icons.person, color: Colors.white, size: 24),
+        ),
+      ),
+    );
+  }
+
+  List<Marker> _buildPetugasMarkers() {
+    return _petugasLocations.asMap().entries.map((entry) {
+      return _buildPetugasMarker(entry.value, entry.key);
+    }).toList();
+  }
+
+  List<Polyline> _buildPetugasPolylines() {
+    if (_petugasLocations.length < 2) return const [];
+
+    final Map<int, List<petugas_location.PetugasLocation>> byPetugas = {};
+    for (final loc in _petugasLocations) {
+      final key = (loc.userId ?? loc.id ?? -1);
+      if (key == -1) continue;
+      byPetugas
+          .putIfAbsent(key, () => <petugas_location.PetugasLocation>[])
+          .add(loc);
+    }
+
+    final polylines = <Polyline>[];
+
+    for (final entry in byPetugas.entries) {
+      final list = entry.value
+        ..sort((a, b) {
+          final ta = a.timestamp;
+          final tb = b.timestamp;
+          if (ta == null && tb == null) return 0;
+          if (ta == null) return 1;
+          if (tb == null) return -1;
+          return ta.compareTo(tb);
+        });
+
+      final points = list
+          .where((p) => p.latitude != null && p.longitude != null)
+          .map((p) => LatLng(p.latitude!, p.longitude!))
+          .toList();
+
+      if (points.length < 2) continue;
+
+      // Draw full path to avoid losing segments across multiple history parts.
+      polylines.add(
+        Polyline(
+          points: points,
+          strokeWidth: 4,
+          color: Colors.blue.withAlpha(220),
+          borderColor: Colors.white.withAlpha(200),
+          borderStrokeWidth: 1.5,
+        ),
+      );
+    }
+
+    return polylines;
   }
 
   Future<void> _syncWilayahData() async {
@@ -972,6 +1641,8 @@ class _TrackingPageState extends State<TrackingPage>
   @override
   void dispose() {
     _isDisposed = true;
+    _trackingStatusTimer?.cancel();
+    _trackingStatusTimer = null;
     WidgetsBinding.instance.removeObserver(this);
     _mapController.dispose();
     super.dispose();
@@ -981,8 +1652,34 @@ class _TrackingPageState extends State<TrackingPage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Live Tracking'),
+        title: Column(
+          crossAxisAlignment:
+              CrossAxisAlignment.start, // Aligns text to the left
+          children: [
+            const Text(
+              'Live Tracking',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            if (widget.survey.nama != null)
+              Text(
+                widget.survey.nama!.toString(),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 8),
+              ),
+          ],
+        ),
         actions: [
+          if (widget.survey.nama != null || widget.survey.roleInSurvei != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children:
+                    const [], // Diperbaiki: Menggunakan konstanta array kosong yang valid
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.sync),
             onPressed: _syncWilayahData,
@@ -994,13 +1691,16 @@ class _TrackingPageState extends State<TrackingPage>
           ? const Center(child: CircularProgressIndicator())
           : Stack(
               children: [
+                // Safe State Binder: Mencegah infinite loop pemicu re-render
                 Builder(
                   builder: (context) {
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (!_mapHasRendered) {
-                        setState(() => _mapHasRendered = true);
-                      }
-                    });
+                    if (!_mapHasRendered) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) {
+                          setState(() => _mapHasRendered = true);
+                        }
+                      });
+                    }
                     return const SizedBox.shrink();
                   },
                 ),
@@ -1013,8 +1713,6 @@ class _TrackingPageState extends State<TrackingPage>
                         ? _currentPosition!
                         : const LatLng(-6.2088, 106.8456),
                     initialZoom: 14,
-                    // FlutterMap versi yang dipakai di project ini belum punya parameter interactiveFlags.
-                    // Zoom/drag tetap harus bekerja via default MapOptions.
                   ),
                   children: [
                     TileLayer(
@@ -1099,6 +1797,12 @@ class _TrackingPageState extends State<TrackingPage>
                           },
                         ),
                       ),
+                    if (_showPetugasLayer) ...[
+                      if (_petugasPolylines.isNotEmpty)
+                        PolylineLayer(polylines: _petugasPolylines),
+                      if (_petugasMarkers.isNotEmpty)
+                        MarkerLayer(markers: _petugasMarkers),
+                    ],
                     if (_showNearbyTargetPoints &&
                         _nearbyTargetMarkers.isNotEmpty)
                       MarkerClusterLayerWidget(
@@ -1143,48 +1847,62 @@ class _TrackingPageState extends State<TrackingPage>
                       ),
                   ],
                 ),
+                // Panel Floating Action Buttons (FAB)
                 Positioned(
                   bottom: 400,
                   right: 16,
-                  child: Stack(
-                    alignment: Alignment.center,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // locate
-                          FloatingActionButton.small(
-                            heroTag: 'locate',
-                            backgroundColor: AppColors.surface,
-                            foregroundColor: AppColors.primary,
-                            onPressed: _getCurrentLocation,
-                            child: const Icon(Icons.my_location),
-                          ),
-                          const SizedBox(height: 8),
-                          FloatingActionButton.small(
-                            heroTag: 'zoom_polygon',
-                            backgroundColor: AppColors.surface,
-                            foregroundColor: AppColors.primary,
-                            onPressed: _showPolygonSelector,
-                            child: const Icon(Icons.crop_free),
-                          ),
-                          const SizedBox(height: 8),
-                          FloatingActionButton.small(
-                            heroTag: 'show_target_nearby',
-                            backgroundColor: AppColors.surface,
-                            foregroundColor: AppColors.primary,
-                            onPressed: _isNearbyLoading
-                                ? null
-                                : _showTargetPoitsNearby,
-                            child: const Icon(Icons.place_outlined),
-                          ),
-                        ],
+                      FloatingActionButton.small(
+                        heroTag: 'locate',
+                        backgroundColor: AppColors.surface,
+                        foregroundColor: AppColors.error,
+                        onPressed: _getCurrentLocation,
+                        child: const Icon(Icons.my_location),
                       ),
+                      const SizedBox(height: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'zoom_polygon',
+                        backgroundColor: AppColors.surface,
+                        foregroundColor: AppColors.green,
+                        onPressed: _showPolygonSelector,
+                        child: const Icon(Icons.crop_free),
+                      ),
+                      const SizedBox(height: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'show_target_nearby',
+                        backgroundColor: AppColors.surface,
+                        foregroundColor: AppColors.primary,
+                        onPressed: _isNearbyLoading
+                            ? null
+                            : _showTargetPointsNearby, // Typo fixed
+                        child: const Icon(Icons.place_outlined),
+                      ),
+                      // Diperbaiki: Menggunakan spread operator agar penempatan di dalam Column valid
+                      if (_showTrackingPetugasFab) ...[
+                        const SizedBox(height: 8),
+                        FloatingActionButton.small(
+                          heroTag: 'tracking_petugas',
+                          backgroundColor: AppColors.surface,
+                          foregroundColor: AppColors.blue,
+                          onPressed: () {
+                            setState(() {
+                              _showPetugasLayer = !_showPetugasLayer;
+                            });
+                            if (_showPetugasLayer) {
+                              _fetchPetugasIfNeeded();
+                              _fetchPetugasLocationsLatestOrFiltered();
+                            }
+                          },
+                          child: const Icon(Icons.person_search_outlined),
+                        ),
+                      ],
                     ],
                   ),
                 ),
-
-                if (_selectedTargetPoint != null && !_isTracking)
+                // Detail Target Info Card
+                if (_selectedTargetPoint != null && !_isLocationActive)
                   Positioned(
                     bottom: 88,
                     left: 24,
@@ -1267,6 +1985,7 @@ class _TrackingPageState extends State<TrackingPage>
                       ).animate().fadeIn(duration: 300.ms),
                     ),
                   ),
+                // Main Action Button (Start/Stop)
                 Positioned(
                   bottom: 24,
                   left: 24,
@@ -1275,7 +1994,24 @@ class _TrackingPageState extends State<TrackingPage>
                     child: ElevatedButton.icon(
                       onPressed: (_isStartLoading || _isStopLoading)
                           ? null
-                          : _toggleTracking,
+                          : () async {
+                              final locked =
+                                  await _isOtherSurveiLockedAndRunning();
+                              if (locked) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: const Text(
+                                        'Tracking sedang aktif pada survei lain',
+                                      ),
+                                      backgroundColor: AppColors.warning,
+                                    ),
+                                  );
+                                }
+                                return;
+                              }
+                              await _toggleTracking();
+                            },
                       icon: _isStartLoading || _isStopLoading
                           ? const SizedBox(
                               width: 20,
@@ -1296,7 +2032,7 @@ class _TrackingPageState extends State<TrackingPage>
                                   : 'Start Tracking'),
                       ),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: _isTracking
+                        backgroundColor: _getIsTrackingForThisSurvey()
                             ? AppColors.error
                             : AppColors.success,
                         foregroundColor: Colors.white,
@@ -1309,56 +2045,62 @@ class _TrackingPageState extends State<TrackingPage>
                     ).animate().fadeIn(duration: 400.ms),
                   ),
                 ),
-                if (_isTracking)
+                // Top Status Indicator Banner
+                if (_getIsTrackingForThisSurvey())
                   Positioned(
                     top: 16,
                     left: 16,
                     right: 16,
-                    child:
-                        Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 10,
-                              ),
-                              decoration: BoxDecoration(
-                                color: AppColors.success,
-                                borderRadius: BorderRadius.circular(12),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withAlpha(25),
-                                    blurRadius: 8,
-                                    offset: const Offset(0, 4),
-                                  ),
-                                ],
-                              ),
-                              child: Row(
-                                children: [
-                                  const SizedBox(
-                                    width: 12,
-                                    height: 12,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      valueColor: AlwaysStoppedAnimation<Color>(
-                                        Colors.white,
+                    child: SafeArea(
+                      child:
+                          Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 10,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppColors.success,
+                                  borderRadius: BorderRadius.circular(12),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withAlpha(25),
+                                      blurRadius: 8,
+                                      offset: const Offset(0, 4),
+                                    ),
+                                  ],
+                                ),
+                                child: Row(
+                                  children: [
+                                    const SizedBox(
+                                      width: 12,
+                                      height: 12,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        valueColor:
+                                            AlwaysStoppedAnimation<Color>(
+                                              Colors.white,
+                                            ),
                                       ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  const Expanded(
-                                    child: Text(
-                                      'Tracking active... Locations are being captured and saved locally.',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 13,
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Text(
+                                        _getIsTrackingForThisSurvey()
+                                            ? 'Tracking aktif: lokasi direkam & sync background aktif.'
+                                            : 'Tracking aktif: lokasi direkam (sync background nonaktif).',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 13,
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                ],
-                              ),
-                            )
-                            .animate()
-                            .fadeIn(duration: 300.ms)
-                            .slideY(begin: -0.5, end: 0, duration: 300.ms),
+                                  ],
+                                ),
+                              )
+                              .animate()
+                              .fadeIn(duration: 300.ms)
+                              .slideY(begin: -0.5, end: 0, duration: 300.ms),
+                    ),
                   ),
               ],
             ),

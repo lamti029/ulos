@@ -11,6 +11,9 @@ class LocationEntity {
   final double? speed;
   final bool isMocked;
   final int? surveiId;
+  final int? sessionId;
+  final int? batteryLevel;
+
   final bool isSynced;
   final DateTime? createdAt;
 
@@ -24,6 +27,8 @@ class LocationEntity {
     this.speed,
     this.isMocked = false,
     this.surveiId,
+    this.sessionId,
+    this.batteryLevel,
     this.isSynced = false,
     this.createdAt,
   });
@@ -40,6 +45,9 @@ class LocationEntity {
       'speed': speed,
       'is_mocked': isMocked ? 1 : 0,
       'survei_id': surveiId,
+      'session_id': sessionId,
+      'battery_level': batteryLevel,
+
       'is_synced': isSynced ? 1 : 0,
       'created_at': createdAt?.toUtc().toIso8601String(),
     };
@@ -57,6 +65,9 @@ class LocationEntity {
       speed: (map['speed'] as num?)?.toDouble(),
       isMocked: map['is_mocked'] == 1,
       surveiId: map['survei_id'] as int?,
+      sessionId: map['session_id'] as int?,
+      batteryLevel: map['battery_level'] as int?,
+
       isSynced: map['is_synced'] == 1,
       createdAt: map['created_at'] != null
           ? DateTime.parse(map['created_at'] as String)
@@ -74,6 +85,8 @@ class LocationEntity {
       'speed': speed,
       'is_mocked': isMocked,
       'survei_id': surveiId,
+      'session_id': sessionId,
+      'battery_level': batteryLevel,
       'timestamp': timestamp.toUtc().toIso8601String(),
     };
   }
@@ -91,7 +104,10 @@ class LocationEntity {
     double? speed,
     bool? isMocked,
     int? surveiId,
+    int? sessionId,
+    int? batteryLevel,
     bool? isSynced,
+
     DateTime? createdAt,
   }) {
     return LocationEntity(
@@ -104,6 +120,9 @@ class LocationEntity {
       speed: speed ?? this.speed,
       isMocked: isMocked ?? this.isMocked,
       surveiId: surveiId ?? this.surveiId,
+      sessionId: sessionId ?? this.sessionId,
+      batteryLevel: batteryLevel ?? this.batteryLevel,
+
       isSynced: isSynced ?? this.isSynced,
       createdAt: createdAt ?? this.createdAt,
     );
