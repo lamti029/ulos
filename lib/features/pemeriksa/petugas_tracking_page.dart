@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:ulos/core/utils/jwt_utils.dart';
 
 import '../../core/services/dio_client.dart';
 import 'petugas_list_page.dart' show PetugasListItem;
@@ -75,12 +76,17 @@ class PetugasLocation {
   }
 
   factory PetugasLocation.fromJson(Map<String, dynamic> json) {
+    // Beberapa API kadang mengirim payload berbeda (mis. user terkait disimpan di `user`).
+    // Requirement untuk filter: petugas_id diambil dari petugas.id, dan payload biasanya tersedia di `user_id`.
     return PetugasLocation(
       id: _parseInt(json['id']),
       userId: _parseInt(json['user_id']),
       surveiId: _parseInt(json['survei_id']),
       namaPetugas:
-          json['nama_petugas']?.toString() ?? json['user']?['name']?.toString(),
+          json['nama_petugas']?.toString() ??
+          json['user']?['name']?.toString() ??
+          json['petugas']?['name']?.toString() ??
+          json['name']?.toString(),
       latitude: _parseDouble(json['latitude']),
       longitude: _parseDouble(json['longitude']),
       accuracy: _parseNum(json['accuracy']),
@@ -107,6 +113,7 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
   String? _errorMessage;
 
   final List<PetugasLocation> _locations = [];
+  final List<PetugasLocation> _latestLocations = [];
 
   Timer? _refreshTimer;
 
@@ -119,7 +126,7 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
   DateTime? _fromDate;
 
   final List<PetugasListItem> _petugas = [];
-
+  int? pemeriksaId;
   bool _isLoadingPetugas = false;
 
   bool get _isFilterActive => _selectedPetugasId != null || _fromDate != null;
@@ -130,8 +137,6 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
     _fetchPetugasIfNeeded();
     _fetchLatestOrFiltered();
 
-    // Auto refresh tidak diperlukan (biar tidak spam request).
-    // Refresh cukup melalui tombol refresh / pull-to-refresh.
     _refreshTimer = null;
   }
 
@@ -165,6 +170,9 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
   }
 
   Future<void> _fetchPetugasIfNeeded() async {
+    final userId = await JwtUtils.getUserId();
+    if (userId == null) return;
+    print('userid $userId');
     if (_petugas.isNotEmpty || _isLoadingPetugas) return;
 
     setState(() => _isLoadingPetugas = true);
@@ -172,7 +180,12 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
     try {
       final res = await DioClient().dio.get(
         '/api/pemeriksa/petugas',
-        queryParameters: {'page': 1, 'limit': 20, 'survei_id': widget.surveiId},
+        queryParameters: {
+          'page': 1,
+          'limit': 20,
+          'survei_id': widget.surveiId,
+          'pemeriksa_id': userId,
+        },
       );
 
       if (res.statusCode != 200) {
@@ -197,9 +210,12 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
           ..clear()
           ..addAll(parsed);
 
-        // Auto-select pertama agar filter tanggal tidak memerlukan petugas manual.
-        if (_selectedPetugasId == null && _petugas.isNotEmpty) {
-          _selectedPetugasId = _petugas.first.id;
+        if (_selectedPetugasId == null) {
+          final firstValid = _petugas.cast<PetugasListItem?>().firstWhere(
+            (e) => e?.id != null && (e?.name ?? '').trim().isNotEmpty,
+            orElse: () => null,
+          );
+          _selectedPetugasId = firstValid?.id;
         }
         _isLoadingPetugas = false;
       });
@@ -242,10 +258,34 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
             .where((p) => _isValidLatLng(p.latitude, p.longitude))
             .toList();
 
+        // Untuk mode /lokasi/terbaru: tampilkan marker lokasi terakhir per petugas.
+        final latestByPetugas = <int?, PetugasLocation>{};
+        for (final p in parsed) {
+          final key = p.userId; // dari respons: user_id = id petugas
+          if (key == null) continue;
+          final prev = latestByPetugas[key];
+          if (prev == null) {
+            latestByPetugas[key] = p;
+            continue;
+          }
+          final prevT = prev.timestamp;
+          final curT = p.timestamp;
+          if (prevT == null && curT != null) {
+            latestByPetugas[key] = p;
+          } else if (prevT != null && curT != null && curT.isAfter(prevT)) {
+            latestByPetugas[key] = p;
+          }
+        }
+
+        final latestLocations = latestByPetugas.values.toList();
+
         setState(() {
           _locations
             ..clear()
             ..addAll(parsed);
+          _latestLocations
+            ..clear()
+            ..addAll(latestLocations);
           _isLoading = false;
 
           if (parsed.isNotEmpty) {
@@ -258,6 +298,9 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
       }
 
       // Filter aktif
+      // Pada mode filter, marker khusus lokasi terakhir tidak ditampilkan.
+      setState(() => _latestLocations.clear());
+
       final query = <String, dynamic>{
         'page': 1,
         'limit': 50,
@@ -330,139 +373,54 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
     }
   }
 
-  List<Marker> get _markers {
-    return _locations.asMap().entries.map((entry) {
-      final idx = entry.key;
-      final loc = entry.value;
-      final lat = loc.latitude!;
-      final lng = loc.longitude!;
-      final nama = (loc.namaPetugas ?? 'Petugas').trim();
-      final timestampStr = _formatTimestamp(loc.timestamp);
-
-      // Backend filter uses `petugas_id`; payload umumnya tersedia sebagai `user_id`.
-      final int? petugasIdForTracking = loc.userId ?? loc.id;
-
-      return Marker(
-        key: ValueKey('${loc.id ?? idx}_$lat,$lng'),
-        point: LatLng(lat, lng),
-        width: 44,
-        height: 44,
-        child: GestureDetector(
-          onTap: () {
-            showDialog(
-              context: context,
-              builder: (context) {
-                return AlertDialog(
-                  title: Text(nama),
-                  content: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (timestampStr != null) Text('Waktu: $timestampStr'),
-                      const SizedBox(height: 8),
-                      Text('Lat: ${lat.toStringAsFixed(6)}'),
-                      Text('Lng: ${lng.toStringAsFixed(6)}'),
-                      if (loc.accuracy != null)
-                        Text('Akurasi: ${loc.accuracy} m'),
-                      if (loc.batteryLevel != null)
-                        Text('Baterai: ${loc.batteryLevel}%'),
-                      if (loc.isMocked != null)
-                        Text('Mock: ${loc.isMocked == true ? 'Ya' : 'Tidak'}'),
-                    ],
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Tutup'),
-                    ),
-                    // if (petugasIdForTracking != null)
-                    //   ElevatedButton.icon(
-                    //     onPressed: () async {
-                    //       final picked = await showDatePicker(
-                    //         context: context,
-                    //         initialDate: _fromDate ?? DateTime.now(),
-                    //         firstDate: DateTime(2020),
-                    //         lastDate: DateTime.now(),
-                    //       );
-                    //       if (picked == null) return;
-
-                    //       setState(() {
-                    //         _selectedPetugasId = petugasIdForTracking;
-                    //         _fromDate = DateTime(
-                    //           picked.year,
-                    //           picked.month,
-                    //           picked.day,
-                    //           0,
-                    //           0,
-                    //           1,
-                    //         );
-                    //       });
-
-                    //       Navigator.pop(context);
-                    //       await _fetchLatestOrFiltered();
-                    //     },
-                    //     icon: const Icon(Icons.track_changes),
-                    //     label: const Text('Track'),
-                    //   ),
-                  ],
-                );
-              },
-            );
-          },
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.blue,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 3),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withAlpha(60),
-                  blurRadius: 10,
-                  spreadRadius: 2,
-                ),
-              ],
-            ),
-            child: const Icon(Icons.location_on, color: Colors.white, size: 24),
-          ),
-        ),
-      );
-    }).toList();
-  }
-
   List<Polyline> get _polylines {
-    // Buat polyline dari urutan lokasi yang diterima
-    if (_locations.length < 2) return const [];
+    if (_locations.isEmpty) return const [];
+    if (_locations.length < 2) {
+      // ignore: avoid_print
+      print(
+        '[PetugasTrackingPage] _locations.length=${_locations.length} (<2) => no polyline',
+      );
+      return const [];
+    }
 
-    final points = _locations
+    // ignore: avoid_print
+    print('[PetugasTrackingPage] _locations.length=${_locations.length}');
+
+    final sorted = List<PetugasLocation>.from(_locations);
+    sorted.sort((a, b) {
+      final ta = a.timestamp;
+      final tb = b.timestamp;
+      if (ta == null && tb == null) return 0;
+      if (ta == null) return 1;
+      if (tb == null) return -1;
+      return ta.compareTo(tb);
+    });
+
+    final pts = sorted
         .where((p) => p.latitude != null && p.longitude != null)
         .map((p) => LatLng(p.latitude!, p.longitude!))
         .toList();
 
-    if (points.length < 2) return const [];
+    if (pts.length < 2) return const [];
 
-    // Optimasi polyline: render hanya “dua titik” (awal & akhir) ketika jumlah titik banyak,
-    // agar tidak terlihat seperti cluster titik dan lebih enak dilihat.
-    if (points.length > 2) {
-      return [
+    // Buat polyline per segmen supaya visual benar-benar mengikuti urutan titik.
+    // (Kadang garis multi-titik yang jaraknya sangat rapat terlihat seperti hanya 2 titik.)
+    if (pts.length < 2) return const [];
+
+    final segs = <Polyline>[];
+    for (var i = 0; i < pts.length - 1; i++) {
+      segs.add(
         Polyline(
-          points: [points.first, points.last],
+          points: [pts[i], pts[i + 1]],
           strokeWidth: 4,
           color: Colors.blue.withAlpha(220),
           borderColor: Colors.white.withAlpha(200),
           borderStrokeWidth: 1.5,
         ),
-      ];
+      );
     }
 
-    return [
-      Polyline(
-        points: points,
-        strokeWidth: 4,
-        color: Colors.blue.withAlpha(220),
-        borderColor: Colors.white.withAlpha(200),
-        borderStrokeWidth: 1.5,
-      ),
-    ];
+    return segs;
   }
 
   @override
@@ -497,21 +455,38 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
                         child: DropdownButtonFormField<int>(
                           value: _selectedPetugasId,
                           isExpanded: true,
-                          decoration: const InputDecoration(
-                            labelText: 'Pilih Petugas',
-                            border: OutlineInputBorder(),
-                            isDense: true,
+                          menuMaxHeight: 280,
+                          isDense: true,
+                          decoration: InputDecoration(
+                            labelText: 'Petugas',
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).dividerColor,
+                              ),
+                            ),
                           ),
                           items: _petugas.isEmpty
                               ? [
                                   const DropdownMenuItem<int>(
-                                    value: null,
+                                    value: -1,
                                     enabled: false,
                                     child: Text('Loading petugas...'),
                                   ),
                                 ]
                               : _petugas
-                                    .where((p) => (p.name).trim().isNotEmpty)
+                                    .where(
+                                      (p) =>
+                                          (p.id ?? -1) != -1 &&
+                                          (p.name).trim().isNotEmpty,
+                                    )
                                     .map(
                                       (p) => DropdownMenuItem<int>(
                                         value: p.id,
@@ -554,8 +529,8 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
                           icon: const Icon(Icons.calendar_month),
                           label: Text(
                             _fromDate == null
-                                ? 'From'
-                                : 'From: ${_fromDate!.day.toString().padLeft(2, '0')}/${_fromDate!.month.toString().padLeft(2, '0')}',
+                                ? 'Pilih Tanggal'
+                                : 'Tanggal: ${_fromDate!.day.toString().padLeft(2, '0')}/${_fromDate!.month.toString().padLeft(2, '0')}',
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -581,14 +556,6 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    _locations.isEmpty
-                        ? 'Belum ada data lokasi.'
-                        : 'Menampilkan ${_locations.length} petugas.',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                    overflow: TextOverflow.ellipsis,
-                  ),
                 ],
               ),
             ),
@@ -611,8 +578,46 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
                               'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                           userAgentPackageName: 'com.ulos.app',
                         ),
+                        if (_latestLocations.isNotEmpty)
+                          MarkerLayer(
+                            markers: _latestLocations
+                                .where(
+                                  (p) =>
+                                      p.latitude != null && p.longitude != null,
+                                )
+                                .map(
+                                  (p) => Marker(
+                                    point: LatLng(p.latitude!, p.longitude!),
+                                    width: 48,
+                                    height: 48,
+                                    child: Container(
+                                      decoration: const BoxDecoration(
+                                        color: Colors.white,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: Container(
+                                        margin: const EdgeInsets.all(6),
+                                        decoration: BoxDecoration(
+                                          color: Colors.blue.shade600,
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                            color: Colors.white,
+                                            width: 2,
+                                          ),
+                                        ),
+                                        child: const Icon(
+                                          Icons.person,
+                                          color: Colors.white,
+                                          size: 22,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                          ),
+
                         PolylineLayer(polylines: _polylines),
-                        MarkerLayer(markers: _markers),
                       ],
                     ),
                     if (_isLoading)

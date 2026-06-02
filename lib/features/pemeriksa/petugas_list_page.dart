@@ -23,20 +23,51 @@ class PetugasListItem {
   const PetugasListItem({required this.name, this.id, this.email, this.role});
 
   factory PetugasListItem.fromJson(Map<String, dynamic> json) {
-    final name = (json['name'] ?? json['nama'] ?? json['nama_petugas'] ?? '')
-        .toString();
-
     int? parseInt(dynamic v) {
       if (v == null) return null;
       if (v is int) return v;
       return int.tryParse(v.toString());
     }
 
+    final dynamic petugasJson = json['petugas'];
+
+    Map<String, dynamic>? petugasObj;
+    if (petugasJson is Map<String, dynamic>) {
+      petugasObj = petugasJson;
+    } else if (petugasJson is List && petugasJson.isNotEmpty) {
+      final first = petugasJson.first;
+      if (first is Map<String, dynamic>) {
+        petugasObj = first;
+      }
+    }
+
+    final rawName =
+        (petugasObj != null
+                ? (petugasObj!['name'] ??
+                      petugasObj!['nama'] ??
+                      petugasObj!['nama_petugas'] ??
+                      petugasObj!['petugas_nama'] ??
+                      '')
+                : (json['name'] ?? json['nama'] ?? json['nama_petugas'] ?? ''))
+            .toString();
+
+    final rawId = (petugasObj != null)
+        ? (petugasObj!['id'] ??
+              petugasObj!['petugas_id'] ??
+              petugasObj!['user_id'])
+        : (json['id'] ?? json['petugas_id'] ?? json['user_id']);
+
+    final rawEmail = (petugasObj != null)
+        ? petugasObj!['email']
+        : json['email'];
+
+    final rawRole = (petugasObj != null) ? petugasObj!['role'] : json['role'];
+
     return PetugasListItem(
-      id: parseInt(json['id']),
-      name: name.isNotEmpty ? name : 'Tanpa Nama',
-      email: json['email']?.toString(),
-      role: json['role']?.toString(),
+      id: parseInt(rawId),
+      name: rawName.isNotEmpty ? rawName : 'Tanpa Nama',
+      email: rawEmail?.toString(),
+      role: rawRole?.toString(),
     );
   }
 }
@@ -54,7 +85,6 @@ class _PetugasListPageState extends State<PetugasListPage> {
     _fetchPetugas(); // Sekarang aman dipanggil tanpa parameter
   }
 
-  // Menghapus parameter surveiId wajib, langsung mengambil dari TrackingController
   Future<void> _fetchPetugas() async {
     setState(() {
       _isLoading = true;
@@ -151,11 +181,9 @@ class _PetugasListPageState extends State<PetugasListPage> {
                     }
 
                     return RefreshIndicator(
-                      onRefresh:
-                          _fetchPetugas, // Berjalan lancar karena fungsi tidak butuh parameter lagi
+                      onRefresh: _fetchPetugas,
                       child: ListView.separated(
-                        physics:
-                            const AlwaysScrollableScrollPhysics(), // Memastikan refresh indicator bisa ditarik walau item sedikit
+                        physics: const AlwaysScrollableScrollPhysics(),
                         itemCount: _items.length,
                         separatorBuilder: (_, __) => const SizedBox(height: 10),
                         itemBuilder: (context, index) {

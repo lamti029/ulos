@@ -157,6 +157,71 @@ class TrackingPageController extends ChangeNotifier {
     _refreshGlobalTrackingStateThenEnsure();
   }
 
+  LatLngBounds? _buildPetugasLocationsBounds() {
+    LatLngBounds? bounds;
+
+    // flutter_map sometimes produces NaN/Infinity zoom when bounds are
+    // extremely small (e.g., only 1 point). We handle that by returning a
+    // “slightly expanded” bounds when needed.
+    const double minDelta = 0.0005; // ~55m at equator
+
+    for (final loc in petugasLocations) {
+      final lat = loc.latitude;
+      final lng = loc.longitude;
+      if (lat == null || lng == null) continue;
+      if (!_isFiniteLatLng(LatLng(lat, lng))) continue;
+      final p = LatLng(lat, lng);
+      if (bounds == null) {
+        bounds = LatLngBounds(p, p);
+      } else {
+        bounds.extend(p);
+      }
+    }
+
+    if (bounds == null) return null;
+
+    final latSpan = (bounds.north - bounds.south).abs();
+    final lngSpan = (bounds.east - bounds.west).abs();
+
+    if (latSpan < minDelta || lngSpan < minDelta) {
+      final center = LatLng(
+        (bounds.north + bounds.south) / 2,
+        (bounds.east + bounds.west) / 2,
+      );
+      final ne = LatLng(
+        center.latitude + minDelta,
+        center.longitude + minDelta,
+      );
+      final sw = LatLng(
+        center.latitude - minDelta,
+        center.longitude - minDelta,
+      );
+      return LatLngBounds(sw, ne);
+    }
+
+    return bounds;
+  }
+
+  Future<void> moveCameraToPetugasLayer({double paddingMeters = 50}) async {
+    if (petugasLocations.isEmpty) return;
+
+    final bounds = _buildPetugasLocationsBounds();
+    if (bounds == null) return;
+
+    // Delay 1 frame so flutter_map tile/zoom calculations are ready.
+    // Prevents NaN/Infinity zoom causing: “Unsupported operation: Infinity or NaN toInt”.
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    // IMPORTANT: fitCamera.bounds keeps all petugas markers visible (multiple petugas).
+    mapController.fitCamera(
+      CameraFit.bounds(
+        bounds: bounds,
+        // flutter_map CameraFit.padding is pixel padding, not meters.
+        padding: EdgeInsets.all(paddingMeters),
+      ),
+    );
+  }
+
   Future<void> _refreshGlobalTrackingStateThenEnsure() async {
     try {
       await TrackingController.instance.init();
@@ -270,9 +335,9 @@ class TrackingPageController extends ChangeNotifier {
 
     notifyListeners();
 
-    if (mapHasRendered) {
-      mapController.move(currentLatLng, 15);
-    }
+    // Always move camera when user taps locate / when we have a valid location.
+    // (mapHasRendered is not reliably set, so gating camera movement can prevent locate from working.)
+    mapController.move(currentLatLng, 15);
   }
 
   Future<bool> isOtherSurveiLockedAndRunning() async {
@@ -824,13 +889,51 @@ class TrackingPageController extends ChangeNotifier {
   List<Polyline> buildPetugasPolylines() {
     if (petugasLocations.length < 2) return const [];
 
+    // Polyline dibuat berdasarkan petugas, tetapi key harus konsisten dengan
+    // payload API. Di response lokasi ada `user_id` untuk user/petugas.
+    // Di model: userId diambil dari json['user_id'].
+    //
+    // Kalau sebelumnya key pakai (userId ?? id) maka bisa terjadi pemecahan
+    // segmen karena `id` adalah id record, bukan id petugas.
     final Map<int, List<petugas_location.PetugasLocation>> byPetugas = {};
+
     for (final loc in petugasLocations) {
-      final key = (loc.userId ?? loc.id ?? -1);
-      if (key == -1) continue;
+      final key = loc.userId;
+      if (key == null) continue;
       byPetugas
           .putIfAbsent(key, () => <petugas_location.PetugasLocation>[])
           .add(loc);
+    }
+
+    // Kalau ternyata semua loc tidak punya userId (mis. field berbeda),
+    // fallback agar tetap bisa menggambar.
+    if (byPetugas.isEmpty) {
+      final sorted = petugasLocations
+        ..sort((a, b) {
+          final ta = a.timestamp;
+          final tb = b.timestamp;
+          if (ta == null && tb == null) return 0;
+          if (ta == null) return 1;
+          if (tb == null) return -1;
+          return ta.compareTo(tb);
+        });
+
+      final points = sorted
+          .where((p) => p.latitude != null && p.longitude != null)
+          .map((p) => LatLng(p.latitude!, p.longitude!))
+          .toList();
+
+      if (points.length < 2) return const [];
+
+      return [
+        Polyline(
+          points: points,
+          strokeWidth: 4,
+          color: Colors.blue.withAlpha(220),
+          borderColor: Colors.white.withAlpha(200),
+          borderStrokeWidth: 1.5,
+        ),
+      ];
     }
 
     final polylines = <Polyline>[];

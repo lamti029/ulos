@@ -4,6 +4,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
+
 import '../../core/constants/app_colors.dart';
 import '../../core/models/survey.dart';
 import 'tracking_page_controller.dart';
@@ -139,6 +140,7 @@ class _TrackingPageState extends State<TrackingPage>
                                 ),
                               ],
                             ),
+
                           if (c.safeWilayahPolygons.isNotEmpty)
                             PolygonLayer(polygons: c.safeWilayahPolygons),
                           if (c.wilayahLabelMarkers.isNotEmpty)
@@ -330,15 +332,20 @@ class _TrackingPageState extends State<TrackingPage>
                                 backgroundColor: AppColors.surface,
                                 foregroundColor: AppColors.blue,
                                 onPressed: () async {
-                                  c.showPetugasLayer = !c.showPetugasLayer;
+                                  final nextShow = !c.showPetugasLayer;
+                                  c.showPetugasLayer = nextShow;
                                   c.notifyListeners();
-                                  if (c.showPetugasLayer) {
-                                    await c.fetchPetugasIfNeeded(context);
-                                    await c
-                                        .fetchPetugasLocationsLatestOrFiltered(
-                                          context,
-                                        );
-                                  }
+                                  if (!nextShow) return;
+
+                                  await c.fetchPetugasIfNeeded(context);
+                                  await c.fetchPetugasLocationsLatestOrFiltered(
+                                    context,
+                                  );
+
+                                  // Fit camera so all petugas markers are visible.
+                                  await c.moveCameraToPetugasLayer(
+                                    paddingMeters: 60,
+                                  );
                                 },
                                 child: const Icon(Icons.person_search_outlined),
                               ),
@@ -429,8 +436,8 @@ class _TrackingPageState extends State<TrackingPage>
                                     constraints: const BoxConstraints(),
                                   ),
                                 ],
-                              ),
-                            ).animate().fadeIn(duration: 300.ms),
+                              ).animate().fadeIn(duration: 300.ms),
+                            ),
                           ),
                         ),
 
