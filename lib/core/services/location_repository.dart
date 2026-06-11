@@ -56,11 +56,13 @@ class LocationRepository {
     return ids;
   }
 
-  /// Get all locations ordered by timestamp (oldest first).
-  Future<List<LocationEntity>> getAll({int? limit}) async {
+  /// Get all locations for specific user ordered by timestamp (newest first).
+  Future<List<LocationEntity>> getAllByUserId(int userId, {int? limit}) async {
     final db = await _dbHelper.database;
     final maps = await db.query(
       DatabaseHelper.tableLocations,
+      where: '${DatabaseHelper.colUserId} = ?',
+      whereArgs: [userId],
       orderBy: '${DatabaseHelper.colTimestamp} DESC',
       limit: limit,
     );
@@ -82,19 +84,48 @@ class LocationRepository {
     return maps.map((m) => LocationEntity.fromMap(m)).toList();
   }
 
-  Future<List<LocationEntity>> getBetween({
-    required DateTime start,
-    required DateTime end,
+  Future<List<LocationEntity>> getAllBySurveiIdAndUserId({
+    required int surveiId,
+    required int userId,
+    int? limit,
   }) async {
     final db = await _dbHelper.database;
     final maps = await db.query(
       DatabaseHelper.tableLocations,
       where:
-          '${DatabaseHelper.colTimestamp} >= ? AND ${DatabaseHelper.colTimestamp} <= ?',
-      whereArgs: [
-        start.toUtc().toIso8601String(),
-        end.toUtc().toIso8601String(),
-      ],
+          '${DatabaseHelper.colSurveiId} = ? AND ${DatabaseHelper.colUserId} = ?',
+      whereArgs: [surveiId, userId],
+      orderBy: '${DatabaseHelper.colTimestamp} DESC',
+      limit: limit,
+    );
+    return maps.map((m) => LocationEntity.fromMap(m)).toList();
+  }
+
+  Future<List<LocationEntity>> getBetween({
+    required DateTime start,
+    required DateTime end,
+    int? userId,
+  }) async {
+    final db = await _dbHelper.database;
+    final whereParts = <String>[
+      '${DatabaseHelper.colTimestamp} >= ? AND ${DatabaseHelper.colTimestamp} <= ?',
+    ];
+    final whereArgs = <Object>[
+      start.toUtc().toIso8601String(),
+      end.toUtc().toIso8601String(),
+    ];
+
+    if (userId != null) {
+      whereParts.add('${DatabaseHelper.colUserId} = ?');
+      whereArgs.add(userId);
+    }
+
+    final whereClause = whereParts.join(' AND ');
+
+    final maps = await db.query(
+      DatabaseHelper.tableLocations,
+      where: whereClause,
+      whereArgs: whereArgs,
       orderBy: '${DatabaseHelper.colTimestamp} DESC',
     );
     return maps.map((m) => LocationEntity.fromMap(m)).toList();
@@ -104,29 +135,53 @@ class LocationRepository {
     required int surveiId,
     required DateTime start,
     required DateTime end,
+    int? userId,
   }) async {
     final db = await _dbHelper.database;
+    final whereParts = <String>[
+      '${DatabaseHelper.colSurveiId} = ?',
+      '${DatabaseHelper.colTimestamp} >= ? AND ${DatabaseHelper.colTimestamp} <= ?',
+    ];
+    final whereArgs = <Object>[
+      surveiId,
+      start.toUtc().toIso8601String(),
+      end.toUtc().toIso8601String(),
+    ];
+
+    if (userId != null) {
+      whereParts.add('${DatabaseHelper.colUserId} = ?');
+      whereArgs.add(userId);
+    }
+
+    final whereClause = whereParts.join(' AND ');
+
     final maps = await db.query(
       DatabaseHelper.tableLocations,
-      where:
-          '${DatabaseHelper.colSurveiId} = ? AND ${DatabaseHelper.colTimestamp} >= ? AND ${DatabaseHelper.colTimestamp} <= ?',
-      whereArgs: [
-        surveiId,
-        start.toUtc().toIso8601String(),
-        end.toUtc().toIso8601String(),
-      ],
+      where: whereClause,
+      whereArgs: whereArgs,
       orderBy: '${DatabaseHelper.colTimestamp} DESC',
     );
     return maps.map((m) => LocationEntity.fromMap(m)).toList();
   }
 
   /// Get locations that haven't been synced to the server yet.
-  Future<List<LocationEntity>> getUnsynced({int? limit}) async {
+  Future<List<LocationEntity>> getUnsynced({int? limit, int? userId}) async {
     final db = await _dbHelper.database;
+
+    final whereParts = <String>['${DatabaseHelper.colIsSynced} = ?'];
+    final whereArgs = <Object>[0];
+
+    if (userId != null) {
+      whereParts.add('${DatabaseHelper.colUserId} = ?');
+      whereArgs.add(userId);
+    }
+
+    final whereClause = whereParts.join(' AND ');
+
     final maps = await db.query(
       DatabaseHelper.tableLocations,
-      where: '${DatabaseHelper.colIsSynced} = ?',
-      whereArgs: [0],
+      where: whereClause,
+      whereArgs: whereArgs,
       orderBy: '${DatabaseHelper.colTimestamp} ASC',
       limit: limit,
     );

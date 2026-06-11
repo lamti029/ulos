@@ -75,7 +75,11 @@ class SubMenuSurveyPage extends StatelessWidget {
                 iconBgColor: AppColors.warning.withAlpha(26),
                 title: 'History Tracking',
                 subtitle: 'View your past tracking sessions and routes',
-                onTap: () => _goTo(context, HistoryPage(surveiId: survey.id)),
+                onTap: () => _goTo(
+                  context,
+                  HistoryPage(surveiId: survey.id, userId: null),
+                ),
+
                 animateDelayMs: 80,
               ),
               const SizedBox(height: 16),
@@ -88,7 +92,9 @@ class SubMenuSurveyPage extends StatelessWidget {
                   iconBgColor: AppColors.warning.withAlpha(26),
                   title: 'Absensi Petugas',
                   subtitle: 'Lihat absensi petugas',
-                  onTap: () => _goTo(context, const PetugasAbsensiPage()),
+                  onTap: () =>
+                      _goTo(context, PetugasAbsensiPage(surveiId: survey.id)),
+
                   animateDelayMs: 240,
                 ),
               ],

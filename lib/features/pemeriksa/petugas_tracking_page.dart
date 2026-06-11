@@ -4,100 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:ulos/core/models/petugas_location.dart';
 import 'package:ulos/core/utils/jwt_utils.dart';
 
 import '../../core/services/dio_client.dart';
+import '../../core/services/wilayah_service.dart';
 import 'petugas_list_page.dart' show PetugasListItem;
-
-class PetugasLocation {
-  final int? id;
-  final int? userId;
-  final int? surveiId;
-  final String? namaPetugas;
-  final double? latitude;
-  final double? longitude;
-  final num? accuracy;
-  final num? speed;
-  final num? altitude;
-  final num? batteryLevel;
-  final bool? isMocked;
-  final DateTime? timestamp;
-
-  const PetugasLocation({
-    this.id,
-    this.userId,
-    this.surveiId,
-    this.namaPetugas,
-    this.latitude,
-    this.longitude,
-    this.accuracy,
-    this.speed,
-    this.altitude,
-    this.batteryLevel,
-    this.isMocked,
-    this.timestamp,
-  });
-
-  static DateTime? _parseDateTime(dynamic v) {
-    if (v == null) return null;
-    try {
-      return DateTime.parse(v.toString()).toLocal();
-    } catch (_) {
-      return null;
-    }
-  }
-
-  static double? _parseDouble(dynamic v) {
-    if (v == null) return null;
-    if (v is double) return v;
-    if (v is int) return v.toDouble();
-    return double.tryParse(v.toString());
-  }
-
-  static int? _parseInt(dynamic v) {
-    if (v == null) return null;
-    if (v is int) return v;
-    return int.tryParse(v.toString());
-  }
-
-  static num? _parseNum(dynamic v) {
-    if (v == null) return null;
-    if (v is num) return v;
-    return num.tryParse(v.toString());
-  }
-
-  static bool? _parseBool(dynamic v) {
-    if (v == null) return null;
-    if (v is bool) return v;
-    final s = v.toString().toLowerCase().trim();
-    if (s == 'true') return true;
-    if (s == 'false') return false;
-    return null;
-  }
-
-  factory PetugasLocation.fromJson(Map<String, dynamic> json) {
-    // Beberapa API kadang mengirim payload berbeda (mis. user terkait disimpan di `user`).
-    // Requirement untuk filter: petugas_id diambil dari petugas.id, dan payload biasanya tersedia di `user_id`.
-    return PetugasLocation(
-      id: _parseInt(json['id']),
-      userId: _parseInt(json['user_id']),
-      surveiId: _parseInt(json['survei_id']),
-      namaPetugas:
-          json['nama_petugas']?.toString() ??
-          json['user']?['name']?.toString() ??
-          json['petugas']?['name']?.toString() ??
-          json['name']?.toString(),
-      latitude: _parseDouble(json['latitude']),
-      longitude: _parseDouble(json['longitude']),
-      accuracy: _parseNum(json['accuracy']),
-      speed: _parseNum(json['speed']),
-      altitude: _parseNum(json['altitude']),
-      batteryLevel: _parseNum(json['battery_level']),
-      isMocked: _parseBool(json['is_mocked']),
-      timestamp: _parseDateTime(json['timestamp'] ?? json['created_at']),
-    );
-  }
-}
 
 class PetugasTrackingPage extends StatefulWidget {
   final int surveiId;
@@ -112,6 +24,96 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
   bool _isLoading = true;
   String? _errorMessage;
 
+  Future<void> _showPetugasInfoDialog(PetugasLocation p) async {
+    final nama = (p.namaPetugas ?? '').trim();
+    final title = nama.isNotEmpty ? nama : 'Petugas';
+
+    String? ts = _formatTimestamp(p.timestamp);
+
+    String? fmtNum(num? v, {String suffix = ''}) {
+      if (v == null) return null;
+      return '${v.toString()}$suffix';
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (_) {
+        final items = <Widget>[];
+
+        void addRow(String label, String? value) {
+          if (value == null || value.trim().isEmpty) return;
+          items.add(
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 110,
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w400,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      value,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
+        addRow('Waktu', ts);
+        addRow('Lat', p.latitude?.toString());
+        addRow('Lng', p.longitude?.toString());
+        addRow('Akurasi', fmtNum(p.accuracy));
+        addRow('Speed', fmtNum(p.speed));
+        addRow('Altitude', fmtNum(p.altitude));
+        addRow('Battery', fmtNum(p.batteryLevel, suffix: '%'));
+        addRow(
+          'Mocked',
+          p.isMocked == null ? null : (p.isMocked! ? 'Ya' : 'Tidak'),
+        );
+
+        if (items.isEmpty) {
+          items.add(
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text('Tidak ada detail tambahan.'),
+            ),
+          );
+        }
+
+        return AlertDialog(
+          title: Text(title),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: items,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Tutup'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   final List<PetugasLocation> _locations = [];
   final List<PetugasLocation> _latestLocations = [];
 
@@ -125,6 +127,10 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
   int? _selectedPetugasId;
   DateTime? _fromDate;
 
+  // Wilayah
+  List<Polygon> _wilayahPolygons = [];
+  List<Map<String, dynamic>> _wilayahData = [];
+
   final List<PetugasListItem> _petugas = [];
   int? pemeriksaId;
   bool _isLoadingPetugas = false;
@@ -136,8 +142,20 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
     super.initState();
     _fetchPetugasIfNeeded();
     _fetchLatestOrFiltered();
+    _initWilayah();
 
     _refreshTimer = null;
+  }
+
+  Future<void> _initWilayah() async {
+    final role = 'pemeriksa';
+    await WilayahService.initFor(surveiId: widget.surveiId, role: role);
+
+    if (!mounted) return;
+    setState(() {
+      _wilayahPolygons = WilayahService.wilayahPolygons;
+      _wilayahData = WilayahService.wilayahData;
+    });
   }
 
   @override
@@ -159,7 +177,6 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
   }
 
   String _formatApiDateTime(DateTime dt) {
-    // Backend parse: DD/MM/YYYY HH:mm:ss
     final dd = dt.day.toString().padLeft(2, '0');
     final mm = dt.month.toString().padLeft(2, '0');
     final yyyy = dt.year.toString();
@@ -172,7 +189,6 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
   Future<void> _fetchPetugasIfNeeded() async {
     final userId = await JwtUtils.getUserId();
     if (userId == null) return;
-    print('userid $userId');
     if (_petugas.isNotEmpty || _isLoadingPetugas) return;
 
     setState(() => _isLoadingPetugas = true);
@@ -200,10 +216,18 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
           ? payload
           : [];
 
-      final parsed = rawList
-          .whereType<Map<String, dynamic>>()
-          .map(PetugasListItem.fromJson)
-          .toList();
+      final parsed = rawList.whereType<Map<String, dynamic>>().expand((item) {
+        final petugasRaw = item['petugas'];
+        if (petugasRaw is List) {
+          return petugasRaw.whereType<Map<String, dynamic>>().map(
+            (petugasObj) => PetugasListItem.fromJson(<String, dynamic>{
+              ...petugasObj,
+              'petugas': petugasObj,
+            }),
+          );
+        }
+        return [PetugasListItem.fromJson(item)];
+      }).toList();
 
       setState(() {
         _petugas
@@ -225,6 +249,177 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
     }
   }
 
+  Future<void> _showPolygonSelector(
+    BuildContext context,
+    List<Polygon> wilayahPolygons,
+    List<Map<String, dynamic>> wilayahData,
+    void Function(List<Polygon>) onSelected,
+  ) async {
+    if (wilayahPolygons.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Tidak ada wilayah polygon tersedia'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        final selectedIndices = <int>{};
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: StatefulBuilder(
+            builder: (builderContext, setBuilderState) {
+              return Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const SizedBox(width: 24),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => Navigator.pop(dialogContext),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
+                      ],
+                    ),
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Theme.of(
+                            builderContext,
+                          ).colorScheme.onSurface.withOpacity(0.25),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      'Zoom to selected polygon',
+                      style: Theme.of(builderContext).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 16),
+                    if (wilayahPolygons.length > 1)
+                      CheckboxListTile(
+                        title: const Text('Pilih Semua'),
+                        value: selectedIndices.length == wilayahPolygons.length,
+                        onChanged: (bool? value) {
+                          setBuilderState(() {
+                            if (value == true) {
+                              selectedIndices..clear();
+                              for (int i = 0; i < wilayahPolygons.length; i++) {
+                                selectedIndices.add(i);
+                              }
+                            } else {
+                              selectedIndices.clear();
+                            }
+                          });
+                        },
+                        activeColor: Theme.of(
+                          builderContext,
+                        ).colorScheme.primary,
+                      ),
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight:
+                            MediaQuery.of(builderContext).size.height * 0.3,
+                      ),
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: wilayahPolygons.length,
+                        itemBuilder: (listContext, index) {
+                          final isSelected = selectedIndices.contains(index);
+                          final itemData =
+                              wilayahData.isNotEmpty &&
+                                  index < wilayahData.length
+                              ? wilayahData[index]
+                              : <String, dynamic>{};
+
+                          final kodeSubSLS =
+                              itemData['id_subsls']?.toString() ?? '';
+                          final kodeKab =
+                              itemData['kode_kab']?.toString() ?? '';
+                          final kodeKec =
+                              itemData['kode_kec']?.toString() ?? '';
+                          final kodeDesa =
+                              itemData['kode_desa']?.toString() ?? '';
+
+                          final displayName = kodeSubSLS.isNotEmpty
+                              ? kodeSubSLS
+                              : [
+                                  kodeKab,
+                                  kodeKec,
+                                  kodeDesa,
+                                ].where((s) => s.isNotEmpty).join(' - ');
+
+                          return CheckboxListTile(
+                            title: Text(
+                              displayName.isNotEmpty
+                                  ? displayName
+                                  : 'Wilayah ${index + 1}',
+                            ),
+                            value: isSelected,
+                            onChanged: (bool? value) {
+                              setBuilderState(() {
+                                if (value == true) {
+                                  selectedIndices.add(index);
+                                } else {
+                                  selectedIndices.remove(index);
+                                }
+                              });
+                            },
+                            activeColor: Theme.of(
+                              builderContext,
+                            ).colorScheme.primary,
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: selectedIndices.isEmpty
+                            ? null
+                            : () {
+                                final selectedPolygons = selectedIndices
+                                    .map((i) => wilayahPolygons[i])
+                                    .toList();
+                                Navigator.pop(dialogContext);
+                                onSelected(selectedPolygons);
+                              },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Theme.of(
+                            builderContext,
+                          ).colorScheme.primary,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        child: const Text('Tampilkan'),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _fetchLatestOrFiltered() async {
     if (!mounted) return;
 
@@ -234,9 +429,7 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
     });
 
     try {
-      // Default (tanpa filter)
       if (!_isFilterActive) {
-        // GET https://trackingapi.bps.web.id/api/pemeriksa/lokasi/terbaru
         final res = await DioClient().dio.get(
           '/api/pemeriksa/lokasi/terbaru',
           queryParameters: {'survei_id': widget.surveiId},
@@ -258,10 +451,9 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
             .where((p) => _isValidLatLng(p.latitude, p.longitude))
             .toList();
 
-        // Untuk mode /lokasi/terbaru: tampilkan marker lokasi terakhir per petugas.
         final latestByPetugas = <int?, PetugasLocation>{};
         for (final p in parsed) {
-          final key = p.userId; // dari respons: user_id = id petugas
+          final key = p.userId;
           if (key == null) continue;
           final prev = latestByPetugas[key];
           if (prev == null) {
@@ -297,8 +489,6 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
         return;
       }
 
-      // Filter aktif
-      // Pada mode filter, marker khusus lokasi terakhir tidak ditampilkan.
       setState(() => _latestLocations.clear());
 
       final query = <String, dynamic>{
@@ -313,7 +503,6 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
       if (_fromDate != null) {
         query['from'] = _formatApiDateTime(_fromDate!);
       }
-      // to: 23:59:59 di tanggal yang sama (agar sama seperti curl)
       if (_fromDate != null) {
         final dtTo = DateTime(
           _fromDate!.year,
@@ -326,7 +515,6 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
         query['to'] = _formatApiDateTime(dtTo);
       }
 
-      // GET https://trackingapi.bps.web.id/api/pemeriksa/lokasi?petugas_id=...&from=...&to=...
       final res = await DioClient().dio.get(
         '/api/pemeriksa/lokasi',
         queryParameters: query,
@@ -375,16 +563,8 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
 
   List<Polyline> get _polylines {
     if (_locations.isEmpty) return const [];
-    if (_locations.length < 2) {
-      // ignore: avoid_print
-      print(
-        '[PetugasTrackingPage] _locations.length=${_locations.length} (<2) => no polyline',
-      );
-      return const [];
-    }
 
-    // ignore: avoid_print
-    print('[PetugasTrackingPage] _locations.length=${_locations.length}');
+    debugPrint('[PetugasTrackingPage] _locations.length=${_locations.length}');
 
     final sorted = List<PetugasLocation>.from(_locations);
     sorted.sort((a, b) {
@@ -401,11 +581,7 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
         .map((p) => LatLng(p.latitude!, p.longitude!))
         .toList();
 
-    if (pts.length < 2) return const [];
-
-    // Buat polyline per segmen supaya visual benar-benar mengikuti urutan titik.
-    // (Kadang garis multi-titik yang jaraknya sangat rapat terlihat seperti hanya 2 titik.)
-    if (pts.length < 2) return const [];
+    if (pts.isEmpty) return const [];
 
     final segs = <Polyline>[];
     for (var i = 0; i < pts.length - 1; i++) {
@@ -415,7 +591,7 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
           strokeWidth: 4,
           color: Colors.blue.withAlpha(220),
           borderColor: Colors.white.withAlpha(200),
-          borderStrokeWidth: 1.5,
+          borderStrokeWidth: 2,
         ),
       );
     }
@@ -423,8 +599,58 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
     return segs;
   }
 
+  Widget _buildPetugasItem(
+    BuildContext context,
+    PetugasListItem p, {
+    bool dense = true,
+  }) {
+    final primary = Theme.of(context).colorScheme.primary;
+    final verticalPadding = dense ? 6.0 : 8.0;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      padding: EdgeInsets.symmetric(horizontal: 14, vertical: verticalPadding),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999), // Bentuk Elips Sempurna
+        color: primary.withOpacity(0.08),
+        border: Border.all(color: primary.withOpacity(0.15)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.max,
+        children: [
+          Container(
+            width: 26,
+            height: 26,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: primary.withOpacity(0.16),
+            ),
+            child: Icon(Icons.person, size: 14, color: primary),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              p.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final petugasFiltered = _petugas
+        .where((p) => (p.id ?? -1) != -1 && (p.name).trim().isNotEmpty)
+        .toList();
+
     return Scaffold(
       appBar: AppBar(title: const Text('Tracking Petugas')),
       body: SafeArea(
@@ -444,35 +670,57 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Filters
                   Wrap(
                     spacing: 12,
                     runSpacing: 8,
                     crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       SizedBox(
-                        width: 220,
+                        width: double.infinity,
                         child: DropdownButtonFormField<int>(
-                          value: _selectedPetugasId,
+                          alignment: Alignment.bottomLeft,
+                          value:
+                              (_selectedPetugasId == null ||
+                                  _selectedPetugasId == -1)
+                              ? null
+                              : _selectedPetugasId,
                           isExpanded: true,
-                          menuMaxHeight: 280,
+                          menuMaxHeight: 320,
                           isDense: true,
                           decoration: InputDecoration(
                             labelText: 'Petugas',
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 12,
-                              vertical: 8,
+                              vertical: 12,
                             ),
+                            filled: true,
+                            fillColor: Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerHighest
+                                .withOpacity(0.15),
                             border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(14),
                             ),
                             enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(14),
                               borderSide: BorderSide(
                                 color: Theme.of(context).dividerColor,
                               ),
                             ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).colorScheme.primary,
+                                width: 1.5,
+                              ),
+                            ),
                           ),
+                          icon: Icon(
+                            Icons.keyboard_arrow_down,
+                            color: Theme.of(context).iconTheme.color,
+                          ),
+                          dropdownColor: Theme.of(context).cardColor,
+                          hint: const Text('Pilih Petugas'),
                           items: _petugas.isEmpty
                               ? [
                                   const DropdownMenuItem<int>(
@@ -481,24 +729,60 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
                                     child: Text('Loading petugas...'),
                                   ),
                                 ]
-                              : _petugas
-                                    .where(
-                                      (p) =>
-                                          (p.id ?? -1) != -1 &&
-                                          (p.name).trim().isNotEmpty,
-                                    )
-                                    .map(
-                                      (p) => DropdownMenuItem<int>(
-                                        value: p.id,
-                                        child: Text(p.name),
+                              : [
+                                  const DropdownMenuItem<int>(
+                                    value: null,
+                                    child: Text('Pilih Petugas'),
+                                  ),
+                                  ...petugasFiltered.map(
+                                    (p) => DropdownMenuItem<int>(
+                                      value: p.id,
+                                      child: _buildPetugasItem(
+                                        context,
+                                        p,
+                                        dense: true,
                                       ),
-                                    )
-                                    .toList(),
+                                    ),
+                                  ),
+                                ],
                           onChanged: (v) {
+                            if (v == null) return;
                             setState(() {
                               _selectedPetugasId = v;
                             });
                             _fetchLatestOrFiltered();
+                          },
+                          selectedItemBuilder: (context) {
+                            if (_petugas.isEmpty) {
+                              return [const Text('Loading petugas...')];
+                            }
+                            return [
+                              const Text('Pilih Petugas'),
+                              ...petugasFiltered.map((p) {
+                                return Row(
+                                  children: [
+                                    Icon(
+                                      Icons.person,
+                                      size: 18,
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.primary,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        p.name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                );
+                              }),
+                            ];
                           },
                         ),
                       ),
@@ -514,7 +798,6 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
                             );
                             if (picked == null) return;
                             setState(() {
-                              // from: 00:00:01 (agar inklusif seperti di curl)
                               _fromDate = DateTime(
                                 picked.year,
                                 picked.month,
@@ -563,7 +846,6 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
             Expanded(
               child: RefreshIndicator(
                 onRefresh: _fetchLatestOrFiltered,
-
                 child: Stack(
                   children: [
                     FlutterMap(
@@ -590,25 +872,31 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
                                     point: LatLng(p.latitude!, p.longitude!),
                                     width: 48,
                                     height: 48,
-                                    child: Container(
-                                      decoration: const BoxDecoration(
-                                        color: Colors.white,
-                                        shape: BoxShape.circle,
-                                      ),
+                                    child: GestureDetector(
+                                      behavior: HitTestBehavior.translucent,
+                                      onTap: () {
+                                        _showPetugasInfoDialog(p);
+                                      },
                                       child: Container(
-                                        margin: const EdgeInsets.all(6),
-                                        decoration: BoxDecoration(
-                                          color: Colors.blue.shade600,
-                                          shape: BoxShape.circle,
-                                          border: Border.all(
-                                            color: Colors.white,
-                                            width: 2,
-                                          ),
-                                        ),
-                                        child: const Icon(
-                                          Icons.person,
+                                        decoration: const BoxDecoration(
                                           color: Colors.white,
-                                          size: 22,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: Container(
+                                          margin: const EdgeInsets.all(6),
+                                          decoration: BoxDecoration(
+                                            color: Colors.blue.shade600,
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                              color: Colors.white,
+                                              width: 2,
+                                            ),
+                                          ),
+                                          child: const Icon(
+                                            Icons.person,
+                                            color: Colors.white,
+                                            size: 22,
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -616,10 +904,66 @@ class _PetugasTrackingPageState extends State<PetugasTrackingPage> {
                                 )
                                 .toList(),
                           ),
-
+                        if (_wilayahPolygons.isNotEmpty)
+                          PolygonLayer(polygons: _wilayahPolygons),
                         PolylineLayer(polylines: _polylines),
                       ],
                     ),
+
+                    // FAB zoom_polygon (same placement style as tracking_page)
+                    Positioned(
+                      bottom: 400,
+                      right: 16,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          FloatingActionButton.small(
+                            heroTag: 'zoom_polygon',
+                            backgroundColor: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
+                            foregroundColor: Colors.green,
+                            onPressed: _wilayahPolygons.isEmpty
+                                ? null
+                                : () => _showPolygonSelector(
+                                    context,
+                                    _wilayahPolygons,
+                                    _wilayahData,
+                                    (selected) {
+                                      LatLngBounds? bounds;
+                                      for (final polygon in selected) {
+                                        for (final point in polygon.points) {
+                                          if (!point.latitude.isFinite ||
+                                              !point.longitude.isFinite) {
+                                            continue;
+                                          }
+                                          final p = LatLng(
+                                            point.latitude,
+                                            point.longitude,
+                                          );
+                                          if (bounds == null) {
+                                            bounds = LatLngBounds(p, p);
+                                          } else {
+                                            bounds.extend(p);
+                                          }
+                                        }
+                                      }
+                                      if (bounds == null) return;
+
+                                      _mapController.fitCamera(
+                                        CameraFit.bounds(
+                                          bounds: bounds,
+                                          padding: const EdgeInsets.all(50),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                            child: const Icon(Icons.crop_free),
+                          ),
+                        ],
+                      ),
+                    ),
+
                     if (_isLoading)
                       const Positioned.fill(
                         child: ColoredBox(

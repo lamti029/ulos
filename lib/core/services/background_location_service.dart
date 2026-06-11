@@ -52,7 +52,6 @@ class BackgroundLocationService {
     _logger.i('BackgroundLocationService stopped');
   }
 
-  /// Immediate flush — useful when user stops tracking manually.
   Future<void> flushNow() async {
     await BackgroundServiceHandler.flushNow();
   }

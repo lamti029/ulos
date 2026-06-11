@@ -2,9 +2,6 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-
-// NOTE: Removed unused WilayahService helpers/variables to satisfy analyzer.
-
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/constants/api_constants.dart';
@@ -73,65 +70,9 @@ class WilayahService {
     );
   }
 
-  static Future<void> _saveToPrefs() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('wilayah_sub_sls_ids', _wilayahSubSLSIds);
-    await prefs.setString('wilayah_data_json', jsonEncode(_wilayahData));
-    await prefs.setString('target_points_json', jsonEncode(_targetPoints));
-    await prefs.setString(
-      'wilayah_polygons_json',
-      jsonEncode(_wilayahPolygons.map(_polygonToMap).toList()),
-    );
-  }
-
-  static Future<void> _loadFromPrefs() async {
-    final prefs = await SharedPreferences.getInstance();
-    debugPrint('[WilayahService] Loading from prefs keys: ${prefs.getKeys()}');
-    _wilayahSubSLSIds = prefs.getStringList('wilayah_sub_sls_ids') ?? [];
-    _wilayahData =
-        (jsonDecode(prefs.getString('wilayah_data_json') ?? '[]') as List)
-            .cast<Map<String, dynamic>>();
-    _targetPoints =
-        (jsonDecode(prefs.getString('target_points_json') ?? '[]') as List)
-            .cast<Map<String, dynamic>>();
-    final polygonsJson = prefs.getString('wilayah_polygons_json') ?? '[]';
-    debugPrint('[WilayahService] polygonsJson length: ${polygonsJson.length}');
-    try {
-      final polygonsList = jsonDecode(polygonsJson) as List;
-      debugPrint(
-        '[WilayahService] parsed polygons list length: ${polygonsList.length}',
-      );
-      _wilayahPolygons = polygonsList
-          .map((e) {
-            try {
-              return _mapToPolygon(e as Map<String, dynamic>);
-            } catch (e) {
-              debugPrint('[WilayahService] Failed to parse polygon $e: $e');
-              return null;
-            }
-          })
-          .where((p) => p != null)
-          .cast<Polygon>()
-          .toList();
-      debugPrint('[WilayahService] loaded ${_wilayahPolygons.length} polygons');
-    } catch (e) {
-      debugPrint('[WilayahService] Failed to load polygons from prefs: $e');
-      _wilayahPolygons = [];
-    }
-  }
-
-  static Future<bool> _hasValidData() async {
-    final prefs = await SharedPreferences.getInstance();
-    final lastSync = prefs.getInt('last_wilayah_sync') ?? 0;
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final expiry = now - (24 * 60 * 60 * 1000); // 24h
-    return lastSync > expiry &&
-        prefs.containsKey('wilayah_sub_sls_ids') &&
-        (prefs.getStringList('wilayah_sub_sls_ids') ?? []).isNotEmpty;
-  }
-
   static Future<List<Map<String, dynamic>>> _fetchAllPagesForSubSLS(
     String idSubSLS,
+    int surveiId,
   ) async {
     final List<Map<String, dynamic>> allData = [];
     const int limit = 100;
@@ -140,7 +81,7 @@ class WilayahService {
       ApiConstants.titikSasaran,
       queryParameters: {
         'id_subsls': idSubSLS,
-        'survei_id': 2,
+        'survei_id': surveiId,
         'page': 1,
         'limit': limit,
       },
@@ -182,22 +123,48 @@ class WilayahService {
     return allData;
   }
 
-  static Future<void> _fetchTargetPoints() async {
+  static Future<void> _fetchTargetPoints({required int surveiId}) async {
     final List<Map<String, dynamic>> allTargetPoints = [];
     for (final idSubSLS in _wilayahSubSLSIds) {
-      final data = await _fetchAllPagesForSubSLS(idSubSLS);
+      final data = await _fetchAllPagesForSubSLS(idSubSLS, surveiId);
       allTargetPoints.addAll(data);
     }
     _targetPoints = allTargetPoints;
   }
 
-  static Future<void> _fetchWilayah() async {
-    final userId = await JwtUtils.getUserId();
-    if (userId == null) return;
+  static String _roleToCachePart(String role) =>
+      role.toLowerCase().trim().contains('pemeriksa') ? 'pemeriksa' : 'petugas';
+
+  static String _keySubSls(int userId, int surveiId, String role) =>
+      'wilayah_sub_sls_ids_${userId}_${surveiId}_${_roleToCachePart(role)}';
+
+  static String _keyWilayahDataJson(int userId, int surveiId, String role) =>
+      'wilayah_data_json_${userId}_${surveiId}_${_roleToCachePart(role)}';
+
+  static String _keyTargetPointsJson(int userId, int surveiId, String role) =>
+      'target_points_json_${userId}_${surveiId}_${_roleToCachePart(role)}';
+
+  static String _keyWilayahPolygonsJson(
+    int userId,
+    int surveiId,
+    String role,
+  ) => 'wilayah_polygons_json_${userId}_${surveiId}_${_roleToCachePart(role)}';
+
+  static String _keyLastWilayahSync(int userId, int surveiId, String role) =>
+      'last_wilayah_sync_${userId}_${surveiId}_${_roleToCachePart(role)}';
+
+  static Future<void> _fetchWilayah({
+    required int userId,
+    required int surveiId,
+    required String role,
+  }) async {
+    final endpoint = _roleToCachePart(role) == 'pemeriksa'
+        ? '/api/pemeriksa/wilayah'
+        : ApiConstants.wilayah;
 
     final response = await DioClient().dio.get(
-      ApiConstants.wilayah,
-      queryParameters: {'petugas_id': userId, 'survei_id': 2},
+      endpoint,
+      queryParameters: {'survei_id': surveiId},
     );
 
     if (response.statusCode != 200) return;
@@ -206,11 +173,86 @@ class WilayahService {
     final List<Polygon> polygons = [];
 
     for (final item in data) {
-      final geoJsonStr = item['geojson'] as String?;
-      if (geoJsonStr == null || geoJsonStr.isEmpty) continue;
+      final id = item['id'] ?? item['id_subsls'] ?? item['survei_id'];
 
-      final rings = GeoJsonUtils.parseGeoJson(geoJsonStr);
+      // geojson backend key bisa berbeda, jadi kita dukung beberapa kemungkinan.
+      final rawGeojson =
+          item['geojson'] ??
+          item['geo_json'] ??
+          item['geoJson'] ??
+          item['geometry'];
+      final geoJsonStr = rawGeojson is String
+          ? rawGeojson
+          : rawGeojson?.toString();
+
+      debugPrint('[WilayahService] _fetchWilayah item id=$id');
+      debugPrint(
+        '[WilayahService] raw geojson type=${rawGeojson.runtimeType} len=${geoJsonStr?.length ?? 0}',
+      );
+
+      // Backend kadang tidak mengirim geojson pada endpoint wilayah.
+      // Fallback: ambil geojson dari master-wilayah/subsls/{id_subsls}.
+      String? geojsonForParsing = geoJsonStr;
+      if (geojsonForParsing == null || geojsonForParsing.isEmpty) {
+        final idSubSLS =
+            item['id_subsls'] ?? item['idSubSLS'] ?? item['subsls_id'];
+        if (idSubSLS != null) {
+          try {
+            final res = await DioClient().dio.get(
+              '/api/master-wilayah/subsls/$idSubSLS',
+            );
+
+            if (res.statusCode == 200 || res.statusCode == 201) {
+              final payload = res.data;
+              final nested = payload is Map<String, dynamic> ? payload : null;
+              final candidate = (nested?['data'] ?? payload) as dynamic;
+
+              final fallbackRaw = candidate is Map<String, dynamic>
+                  ? (candidate['geojson'] ??
+                        candidate['geo_json'] ??
+                        candidate['geoJson'] ??
+                        candidate['geometry'])
+                  : null;
+
+              final fallbackStr = fallbackRaw is String
+                  ? fallbackRaw
+                  : fallbackRaw?.toString();
+
+              debugPrint(
+                '[WilayahService] fallback geojson from subsls id_subsls=$idSubSLS len=${fallbackStr?.length ?? 0}',
+              );
+              geojsonForParsing = fallbackStr;
+            }
+          } catch (e) {
+            debugPrint(
+              '[WilayahService] fallback geojson request failed for id_subsls=$idSubSLS err=$e',
+            );
+          }
+        }
+
+        debugPrint(
+          '[WilayahService] geojson is empty/null for id=$id. Keys present: ${item.keys}',
+        );
+        if (geojsonForParsing == null || geojsonForParsing.isEmpty) {
+          continue;
+        }
+      }
+
+      List<List<LatLng>> rings = const <List<LatLng>>[];
+      try {
+        rings = GeoJsonUtils.parseGeoJson(
+          geojsonForParsing ?? geoJsonStr ?? '',
+        );
+      } catch (e) {
+        debugPrint('[WilayahService] parse geojson failed for id=$id err=$e');
+      }
+
+      debugPrint('[WilayahService] rings count for id=$id = ${rings.length}');
+
+      var ringIndex = 0;
       for (final ring in rings) {
+        ringIndex++;
+        debugPrint('[WilayahService] ring #$ringIndex length=${ring.length}');
         if (ring.length >= 3) {
           polygons.add(
             Polygon(
@@ -233,61 +275,151 @@ class WilayahService {
         .toList();
   }
 
-  /// Main init method: Load from prefs if valid, else fetch from API and save.
-  static Future<void> init() async {
-    debugPrint('[WilayahService] init() called');
-    try {
-      if (await _hasValidData()) {
-        await _loadFromPrefs();
-        debugPrint('[WilayahService] Loaded data from SharedPreferences');
-        // Validate loaded data
-        if (_wilayahPolygons.isEmpty && _wilayahSubSLSIds.isNotEmpty) {
-          debugPrint('[WilayahService] Loaded data invalid, refetching');
-          throw Exception('Invalid loaded data');
-        }
-      } else {
-        throw Exception('No valid cached data');
-      }
-    } catch (e) {
-      debugPrint(
-        '[WilayahService] Cache load failed ($e), clearing and refetching',
-      );
-      await _clearPrefs();
-      await _fetchWilayah();
-      await _fetchTargetPoints();
-      await _saveToPrefs();
-      debugPrint(
-        '[WilayahService] Fetched fresh data from API and saved to prefs',
-      );
-    }
-    debugPrint(
-      '[WilayahService] Final state: ${_wilayahPolygons.length} polygons, ${_wilayahSubSLSIds.length} subSLS',
+  static Future<void> _saveToPrefsFor({
+    required int userId,
+    required int surveiId,
+    required String role,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setStringList(
+      _keySubSls(userId, surveiId, role),
+      _wilayahSubSLSIds,
+    );
+    await prefs.setString(
+      _keyWilayahDataJson(userId, surveiId, role),
+      jsonEncode(_wilayahData),
+    );
+    await prefs.setString(
+      _keyTargetPointsJson(userId, surveiId, role),
+      jsonEncode(_targetPoints),
+    );
+    await prefs.setString(
+      _keyWilayahPolygonsJson(userId, surveiId, role),
+      jsonEncode(_wilayahPolygons.map(_polygonToMap).toList()),
+    );
+
+    await prefs.setInt(
+      _keyLastWilayahSync(userId, surveiId, role),
+      DateTime.now().millisecondsSinceEpoch,
     );
   }
 
-  /// Ensure initialized, call if needed (e.g. in tracking init)
+  static Future<void> _loadFromPrefsFor({
+    required int userId,
+    required int surveiId,
+    required String role,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    _wilayahSubSLSIds =
+        prefs.getStringList(_keySubSls(userId, surveiId, role)) ?? [];
+
+    _wilayahData =
+        (jsonDecode(
+                  prefs.getString(
+                        _keyWilayahDataJson(userId, surveiId, role),
+                      ) ??
+                      '[]',
+                )
+                as List)
+            .cast<Map<String, dynamic>>();
+
+    _targetPoints =
+        (jsonDecode(
+                  prefs.getString(
+                        _keyTargetPointsJson(userId, surveiId, role),
+                      ) ??
+                      '[]',
+                )
+                as List)
+            .cast<Map<String, dynamic>>();
+
+    final polygonsJson =
+        prefs.getString(_keyWilayahPolygonsJson(userId, surveiId, role)) ??
+        '[]';
+
+    final polygonsList = jsonDecode(polygonsJson) as List;
+    _wilayahPolygons = polygonsList
+        .map((e) {
+          try {
+            return _mapToPolygon(e as Map<String, dynamic>);
+          } catch (_) {
+            return null;
+          }
+        })
+        .whereType<Polygon>()
+        .toList();
+  }
+
+  static Future<bool> _hasValidDataFor({
+    required int userId,
+    required int surveiId,
+    required String role,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final lastSync =
+        prefs.getInt(_keyLastWilayahSync(userId, surveiId, role)) ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final expiry = now - (24 * 60 * 60 * 1000); // 24h
+
+    if (lastSync <= expiry) return false;
+
+    final ids = prefs.getStringList(_keySubSls(userId, surveiId, role)) ?? [];
+    return ids.isNotEmpty;
+  }
+
+  /// Main init method: load cache for (userId,sureveiId,role), else fetch from API.
+  static Future<void> initFor({
+    required int surveiId,
+    required String role,
+  }) async {
+    final userId = await JwtUtils.getUserId();
+    if (userId == null) return;
+
+    try {
+      if (await _hasValidDataFor(
+        userId: userId,
+        surveiId: surveiId,
+        role: role,
+      )) {
+        await _loadFromPrefsFor(userId: userId, surveiId: surveiId, role: role);
+
+        if (_wilayahSubSLSIds.isEmpty || _wilayahPolygons.isEmpty) {
+          throw Exception(
+            'Invalid cached wilayah data (subSLS or polygons empty)',
+          );
+        }
+
+        return;
+      }
+    } catch (_) {
+      // fallthrough to refetch
+    }
+
+    // Refetch fresh
+    await _fetchWilayah(userId: userId, surveiId: surveiId, role: role);
+    await _fetchTargetPoints(surveiId: surveiId);
+    await _saveToPrefsFor(userId: userId, surveiId: surveiId, role: role);
+  }
+
   static Future<void> ensureInitialized() async {
     if (_wilayahSubSLSIds.isEmpty) {
-      await init();
+      await initFor(surveiId: 2, role: 'petugas');
     }
   }
 
-  /// Clear data (logout?)
   static Future<void> _clearPrefs() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('wilayah_sub_sls_ids');
-    await prefs.remove('wilayah_data_json');
-    await prefs.remove('target_points_json');
-    await prefs.remove('wilayah_polygons_json');
-    await prefs.remove('last_wilayah_sync');
-    debugPrint('[WilayahService] Cleared all wilayah prefs');
+    await prefs.clear();
+
+    debugPrint('[WilayahService] Cleared all wilayah prefs (prefs.clear)');
     _wilayahPolygons.clear();
     _wilayahSubSLSIds.clear();
     _wilayahData.clear();
     _targetPoints.clear();
   }
 
-  /// Public clear (e.g. for logout)
   static Future<void> clear() async {
     await _clearPrefs();
   }

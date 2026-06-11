@@ -26,12 +26,46 @@ class _ProfilePageState extends State<ProfilePage> {
   String? _appVersionText;
   bool _isLoading = true;
 
+  String? _lastTokenSnapshot;
+
   @override
   void initState() {
     super.initState();
     _loadUserName();
     _loadEmail();
     _loadAppVersion();
+    _setupAuthListener();
+  }
+
+  Future<void> _setupAuthListener() async {
+    // Reload profile if token changes (e.g., login user berbeda setelah session expired)
+    _lastTokenSnapshot ??= await DioClient().getToken();
+
+    // Polling ringan: refresh profil ketika token berubah.
+    // Ini menghindari ketergantungan pada global auth stream.
+    Future<void> loop() async {
+      while (mounted) {
+        await Future.delayed(const Duration(seconds: 2));
+        final current = await DioClient().getToken();
+        if (current == null) {
+          if (!mounted) return;
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const LoginPage()),
+            (route) => false,
+          );
+          return;
+        }
+
+        if (current != _lastTokenSnapshot) {
+          _lastTokenSnapshot = current;
+          await _loadUserName();
+          await _loadEmail();
+        }
+      }
+    }
+
+    // Fire and forget
+    loop();
   }
 
   Future<void> _loadAppVersion() async {
@@ -63,6 +97,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
   Future<void> _loadEmail() async {
     var email = await DioClient().getEmail();
+
     // Fallback to JWT if not in prefs
     if (email == null || email.isEmpty) {
       email = await JwtUtils.getEmail();

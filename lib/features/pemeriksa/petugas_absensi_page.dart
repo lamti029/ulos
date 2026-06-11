@@ -5,7 +5,9 @@ import 'package:dio/dio.dart';
 import '../../core/services/dio_client.dart';
 
 class PetugasAbsensiPage extends StatefulWidget {
-  const PetugasAbsensiPage({super.key});
+  const PetugasAbsensiPage({super.key, required this.surveiId});
+
+  final int surveiId;
 
   @override
   State<PetugasAbsensiPage> createState() => _PetugasAbsensiPageState();
@@ -42,7 +44,7 @@ class AbsensiItem {
       final s = v.toString();
       if (s.trim().isEmpty) return null;
       try {
-        return DateTime.parse(s);
+        return DateTime.parse(s).toLocal();
       } catch (_) {
         return null;
       }
@@ -50,11 +52,11 @@ class AbsensiItem {
 
     return AbsensiItem(
       id: parseInt(json['id']),
-      // Backend contoh: user.name (mis. "Petugas Dummy 1")
+
       petugasName:
           pickString(['name', 'user_name', 'user_name_petugas']) ??
           json['user']?['name']?.toString(),
-      tanggal: parseDate(json['created_at'] ?? json['tanggal']),
+      tanggal: parseDate(json['jam_mulai_tracking']),
       status: pickString(['status', 'keterangan', 'absensi', 'state']),
     );
   }
@@ -69,7 +71,6 @@ class _PetugasAbsensiPageState extends State<PetugasAbsensiPage> {
   final List<AbsensiItem> _items = [];
 
   String _toApiDate(DateTime dt) {
-    // YYYY-MM-DD
     return '${dt.year.toString().padLeft(4, '0')}-'
         '${dt.month.toString().padLeft(2, '0')}-'
         '${dt.day.toString().padLeft(2, '0')}';
@@ -109,13 +110,20 @@ class _PetugasAbsensiPageState extends State<PetugasAbsensiPage> {
   }
 
   Future<void> _fetchAbsensi() async {
+    final surveiId = widget.surveiId;
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
     try {
-      final params = <String, dynamic>{'page': 1, 'limit': 200};
+      final params = <String, dynamic>{
+        'survei_id': surveiId,
+        'page': 1,
+        'limit': 20,
+      };
+
       if (_selectedTanggal != null) {
         params['tanggal'] = _toApiDate(_selectedTanggal!);
       }
@@ -175,7 +183,17 @@ class _PetugasAbsensiPageState extends State<PetugasAbsensiPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Absen Petugas')),
+      appBar: AppBar(
+        title: const Text('Absen Petugas'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed: _isLoading ? null : _fetchAbsensi,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(20),
@@ -188,7 +206,6 @@ class _PetugasAbsensiPageState extends State<PetugasAbsensiPage> {
               ).animate().fadeIn(duration: 400.ms),
               const SizedBox(height: 8),
 
-              // Filter tanggal: pilih satu tanggal saja
               _TanggalFilterBar(
                 selected: _selectedTanggal,
                 onClear: () {
@@ -458,7 +475,6 @@ class _AbsensiPetugasCard extends StatelessWidget {
     );
 
     if (!showCardShell) {
-      // used as children inside ExpansionTile -> avoid nested card UI
       return cardBody;
     }
 
@@ -477,23 +493,7 @@ class _AbsensiStatusRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final status = (item.status ?? '').trim();
-
     Color statusColor = Theme.of(context).colorScheme.onSurface;
-    if (status.isNotEmpty) {
-      final s = status.toLowerCase();
-      if (s.contains('hadir') || s.contains('masuk')) {
-        statusColor = Colors.green;
-      } else if (s.contains('izin') || s.contains('i')) {
-        statusColor = Colors.orange;
-      } else if (s.contains('alpha') ||
-          s.contains('tidak') ||
-          s.contains('bolos')) {
-        statusColor = Colors.red;
-      } else {
-        statusColor = Theme.of(context).colorScheme.primary;
-      }
-    }
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
@@ -504,7 +504,7 @@ class _AbsensiStatusRow extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              status.isNotEmpty ? status : '—',
+              item.tanggal.toString(),
               style: TextStyle(fontWeight: FontWeight.w600, color: statusColor),
             ),
           ),

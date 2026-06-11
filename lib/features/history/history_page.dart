@@ -9,8 +9,9 @@ import '../../core/services/location_repository.dart';
 
 class HistoryPage extends StatefulWidget {
   final int surveiId;
+  final int? userId;
 
-  const HistoryPage({super.key, required this.surveiId});
+  const HistoryPage({super.key, required this.surveiId, required this.userId});
 
   @override
   State<HistoryPage> createState() => _HistoryPageState();
@@ -18,6 +19,8 @@ class HistoryPage extends StatefulWidget {
 
 class _HistoryPageState extends State<HistoryPage> {
   final LocationRepository _repository = LocationRepository();
+
+  int? get _userId => widget.userId;
 
   int get _surveiId => widget.surveiId;
 
@@ -44,16 +47,25 @@ class _HistoryPageState extends State<HistoryPage> {
       if (_startDate != null && _endDate != null) {
         locations = await _repository.getBetweenBySurveiId(
           surveiId: _surveiId,
+
           start: _startDate!,
           end: _endDate!
               .add(const Duration(days: 1))
               .subtract(const Duration(seconds: 1)),
         );
       } else {
-        locations = await _repository.getAllBySurveiId(
-          surveiId: _surveiId,
-          limit: 100,
-        );
+        if (_userId != null) {
+          locations = await _repository.getAllBySurveiIdAndUserId(
+            surveiId: _surveiId,
+            userId: _userId!,
+            limit: 100,
+          );
+        } else {
+          locations = await _repository.getAllBySurveiId(
+            surveiId: _surveiId,
+            limit: 100,
+          );
+        }
       }
 
       // Group points by sessionId to avoid connecting different sessions.

@@ -23,7 +23,7 @@ class _SplashPageState extends State<SplashPage> {
   @override
   void initState() {
     super.initState();
-    // Flutter widget tests should not trigger timers/async permission flows.
+
     if (!_isTest) {
       _requestNotificationPermissionThenAuth();
     }
@@ -36,7 +36,6 @@ class _SplashPageState extends State<SplashPage> {
   }
 
   Future<void> _requestNotificationPermissionThenAuth() async {
-    // Avoid `print` in production; keep noise-free splash logs.
     try {
       debugPrint('[SPLASH] requestIfNeeded: start');
 
@@ -57,14 +56,13 @@ class _SplashPageState extends State<SplashPage> {
   Future<void> _checkAuth() async {
     debugPrint('[SPLASH] _checkAuth start');
 
-    // Avoid async timers/navigation during widget tests.
     if (const bool.fromEnvironment('FLUTTER_TEST')) {
       debugPrint('[SPLASH] _checkAuth skipped (FLUTTER_TEST)');
       return;
     }
 
-    debugPrint('[SPLASH] waiting 2s');
-    await Future.delayed(const Duration(seconds: 2));
+    debugPrint('[SPLASH] waiting 1s');
+    await Future.delayed(const Duration(seconds: 1));
 
     if (!mounted) {
       debugPrint('[SPLASH] _checkAuth aborted (not mounted after delay)');

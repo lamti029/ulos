@@ -340,6 +340,7 @@ class _TrackingPageState extends State<TrackingPage>
                                   await c.fetchPetugasIfNeeded(context);
                                   await c.fetchPetugasLocationsLatestOrFiltered(
                                     context,
+                                    fetchLatestForAllPetugas: true,
                                   );
 
                                   // Fit camera so all petugas markers are visible.

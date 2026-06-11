@@ -5,6 +5,7 @@ import '../../core/constants/app_colors.dart';
 import '../../core/services/dio_client.dart';
 import '../../core/utils/jwt_utils.dart';
 import '../profile/profile_page.dart';
+import '../login/login_page.dart';
 
 import '../../core/models/survey.dart';
 import '../../core/services/survey_service.dart';
@@ -34,6 +35,8 @@ class _HomePageState extends State<HomePage>
     WidgetsBinding.instance.addObserver(this);
     _loadUserName();
     _loadSurveysFromCacheThenMaybeRefresh();
+    _setupAuthChangeRefresh();
+
     // _checkTrackingStatus();
   }
 
@@ -64,6 +67,41 @@ class _HomePageState extends State<HomePage>
   @override
   bool get wantKeepAlive => true;
 
+  String? _lastTokenSnapshot;
+
+  Future<void> _setupAuthChangeRefresh() async {
+    // Similar to ProfilePage: refresh Home UI when token changes
+    _lastTokenSnapshot ??= await DioClient().getToken();
+
+    Future<void> loop() async {
+      while (mounted) {
+        await Future.delayed(const Duration(seconds: 2));
+        final current = await DioClient().getToken();
+        if (current == null) {
+          if (!mounted) return;
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const LoginPage()),
+            (route) => false,
+          );
+          return;
+        }
+
+        if (current != _lastTokenSnapshot) {
+          _lastTokenSnapshot = current;
+          // invalidate cache survei untuk user lama
+          final oldUserId = await JwtUtils.getUserId();
+          if (oldUserId != null) {
+            await SurveyCacheService.clearForUser(oldUserId);
+          }
+          await _loadUserName();
+          await _loadSurveysFromCacheThenMaybeRefresh(force: true);
+        }
+      }
+    }
+
+    loop();
+  }
+
   Future<void> _loadUserName() async {
     var name = await DioClient().getUserName();
 
@@ -84,12 +122,34 @@ class _HomePageState extends State<HomePage>
   Future<void> _loadSurveysFromCacheThenMaybeRefresh({
     bool force = false,
   }) async {
+    final userId = await JwtUtils.getUserId();
+    if (userId == null) {
+      if (!mounted) return;
+      setState(() {
+        _isLoadingSurveys = false;
+      });
+      return;
+    }
+
     setState(() {
       _isLoadingSurveys = true;
     });
 
     try {
-      final cached = await SurveyCacheService.loadCachedSurveys();
+      // Resolve userId from token.
+      final userId = await JwtUtils.getUserId();
+
+      if (userId == null) {
+        if (!mounted) return;
+        setState(() {
+          _surveys = const [];
+          _selectedSurveiId = null;
+          _isLoadingSurveys = false;
+        });
+        return;
+      }
+
+      final cached = await SurveyCacheService.loadCachedSurveys(userId: userId);
 
       if (!mounted) return;
       setState(() {
@@ -98,11 +158,13 @@ class _HomePageState extends State<HomePage>
         _isLoadingSurveys = false;
       });
 
-      // Requirement: refresh survei hanya manual (tidak auto-refresh).
-      // Tombol manual dibatasi: paling cepat 1x per jam.
       if (!force) return;
 
-      final canRefresh = await SurveyCacheService.canRefreshNow(force: force);
+      final canRefresh = await SurveyCacheService.canRefreshNow(
+        force: force,
+        userId: userId,
+      );
+
       if (!canRefresh) return;
 
       final fresh = await _surveyService.fetchSurveys();
@@ -114,12 +176,14 @@ class _HomePageState extends State<HomePage>
         _isLoadingSurveys = false;
       });
 
-      await SurveyCacheService.saveSurveysToCache(fresh);
+      await SurveyCacheService.saveSurveysToCache(
+        userId: userId,
+        surveys: fresh,
+      );
     } catch (e) {
       if (!mounted) return;
 
       setState(() {
-        // Keep whatever we already had (possibly cached).
         _isLoadingSurveys = false;
       });
 

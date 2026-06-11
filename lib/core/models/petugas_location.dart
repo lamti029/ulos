@@ -78,7 +78,7 @@ class PetugasLocation {
       altitude: _parseNum(json['altitude']),
       batteryLevel: _parseNum(json['battery_level']),
       isMocked: _parseBool(json['is_mocked']),
-      timestamp: _parseDateTime(json['timestamp'] ?? json['created_at']),
+      timestamp: _parseDateTime(json['timestamp']),
     );
   }
 }

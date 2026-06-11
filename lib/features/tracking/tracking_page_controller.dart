@@ -137,32 +137,52 @@ class TrackingPageController extends ChangeNotifier {
   bool _isFiniteLatLng(LatLng l) => l.latitude.isFinite && l.longitude.isFinite;
 
   bool showTrackingPetugasFab() {
-    final rawRole = survey.roleInSurvei?.toString();
-    final role = rawRole
-        ?.toLowerCase()
-        .trim()
-        .replaceAll('[', '')
-        .replaceAll(']', '')
-        .replaceAll('"', '')
-        .replaceAll("'", '');
+    final dynamic roleRaw = survey.roleInSurvei;
+    final roleList = <String>[];
 
-    return role == 'pemeriksa';
+    if (roleRaw is List) {
+      for (final e in roleRaw) {
+        if (e == null) continue;
+        roleList.add(e.toString());
+      }
+    } else if (roleRaw != null) {
+      final s = roleRaw.toString();
+
+      if (s.contains('[') && s.contains(']')) {
+        final cleaned = s
+            .toLowerCase()
+            .trim()
+            .replaceAll('[', '')
+            .replaceAll(']', '')
+            .replaceAll('"', '')
+            .replaceAll("'", '');
+
+        roleList.addAll(
+          cleaned
+              .split(',')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList(),
+        );
+      } else {
+        roleList.add(s);
+      }
+    }
+
+    return roleList
+        .map((e) => e.toLowerCase().trim())
+        .where((e) => e.isNotEmpty)
+        .any((e) => e == 'pemeriksa');
   }
 
   void init() {
     schedulerService = SchedulerService.instance;
-
-    // Refresh state global tracking terlebih dahulu agar tombol tidak
-    // salah (mis. survey A sudah stop tapi halaman survey B tetap tampil Stop).
     _refreshGlobalTrackingStateThenEnsure();
   }
 
   LatLngBounds? _buildPetugasLocationsBounds() {
     LatLngBounds? bounds;
 
-    // flutter_map sometimes produces NaN/Infinity zoom when bounds are
-    // extremely small (e.g., only 1 point). We handle that by returning a
-    // “slightly expanded” bounds when needed.
     const double minDelta = 0.0005; // ~55m at equator
 
     for (final loc in petugasLocations) {
@@ -208,17 +228,11 @@ class TrackingPageController extends ChangeNotifier {
     final bounds = _buildPetugasLocationsBounds();
     if (bounds == null) return;
 
-    // Delay 1 frame so flutter_map tile/zoom calculations are ready.
-    // Prevents NaN/Infinity zoom causing: “Unsupported operation: Infinity or NaN toInt”.
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     // IMPORTANT: fitCamera.bounds keeps all petugas markers visible (multiple petugas).
     mapController.fitCamera(
-      CameraFit.bounds(
-        bounds: bounds,
-        // flutter_map CameraFit.padding is pixel padding, not meters.
-        padding: EdgeInsets.all(paddingMeters),
-      ),
+      CameraFit.bounds(bounds: bounds, padding: EdgeInsets.all(paddingMeters)),
     );
   }
 
@@ -278,8 +292,6 @@ class TrackingPageController extends ChangeNotifier {
   }
 
   Future<void> updateTrackingStatus() async {
-    // Sync state global agar activeSurveiId sesuai prefs terbaru.
-    // (mis. user close page lalu buka lagi untuk survei lain)
     try {
       await TrackingController.instance.init();
     } catch (_) {
@@ -298,7 +310,45 @@ class TrackingPageController extends ChangeNotifier {
   }
 
   Future<void> initializeData() async {
-    await WilayahService.ensureInitialized();
+    final dynamic roleRaw = survey.roleInSurvei;
+
+    final roleList = <String>[];
+    if (roleRaw is List) {
+      for (final e in roleRaw) {
+        if (e == null) continue;
+        roleList.add(e.toString());
+      }
+    } else if (roleRaw != null) {
+      final s = roleRaw.toString();
+      if (s.contains('[') && s.contains(']')) {
+        final cleaned = s
+            .toLowerCase()
+            .trim()
+            .replaceAll('[', '')
+            .replaceAll(']', '')
+            .replaceAll('"', '')
+            .replaceAll("'", '');
+        roleList..addAll(
+          cleaned
+              .split(',')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList(),
+        );
+      } else {
+        roleList.add(s);
+      }
+    }
+
+    final isPemeriksa = roleList
+        .map((e) => e.toLowerCase().trim())
+        .any((e) => e == 'pemeriksa');
+
+    await WilayahService.initFor(
+      surveiId: survey.id,
+      role: isPemeriksa ? 'pemeriksa' : 'petugas',
+    );
+
     wilayahPolygons = WilayahService.wilayahPolygons;
     wilayahData = WilayahService.wilayahData;
 
@@ -786,7 +836,7 @@ class TrackingPageController extends ChangeNotifier {
     final lat = (loc.latitude ?? 0.0);
     final lng = (loc.longitude ?? 0.0);
     final nama = (loc.namaPetugas ?? 'Petugas').trim();
-    final timestampStr = formatTimestamp(loc.timestamp);
+    final timestampStr = formatTimestamp(loc.timestamp?.toLocal());
     final bool isMocked = loc.isMocked == true;
 
     return Marker(
@@ -889,12 +939,6 @@ class TrackingPageController extends ChangeNotifier {
   List<Polyline> buildPetugasPolylines() {
     if (petugasLocations.length < 2) return const [];
 
-    // Polyline dibuat berdasarkan petugas, tetapi key harus konsisten dengan
-    // payload API. Di response lokasi ada `user_id` untuk user/petugas.
-    // Di model: userId diambil dari json['user_id'].
-    //
-    // Kalau sebelumnya key pakai (userId ?? id) maka bisa terjadi pemecahan
-    // segmen karena `id` adalah id record, bukan id petugas.
     final Map<int, List<petugas_location.PetugasLocation>> byPetugas = {};
 
     for (final loc in petugasLocations) {
@@ -905,8 +949,6 @@ class TrackingPageController extends ChangeNotifier {
           .add(loc);
     }
 
-    // Kalau ternyata semua loc tidak punya userId (mis. field berbeda),
-    // fallback agar tetap bisa menggambar.
     if (byPetugas.isEmpty) {
       final sorted = petugasLocations
         ..sort((a, b) {
@@ -992,7 +1034,6 @@ class TrackingPageController extends ChangeNotifier {
           ? payload
           : [];
 
-      // This page only uses first item to set selection.
       if (rawList.isNotEmpty) {
         petugas.clear();
         for (final item in rawList) {
@@ -1013,12 +1054,17 @@ class TrackingPageController extends ChangeNotifier {
   }
 
   Future<void> fetchPetugasLocationsLatestOrFiltered(
-    BuildContext context,
-  ) async {
+    BuildContext context, {
+    bool fetchLatestForAllPetugas = false,
+  }) async {
     if (!context.mounted) return;
 
     try {
-      if (selectedPetugasId == null) {
+      final bool useLatestAll = fetchLatestForAllPetugas;
+
+      // Mode FAB: selalu ambil “lokasi terbaru per petugas”, tanpa
+      // bergantung pada selectedPetugasId.
+      if (useLatestAll || selectedPetugasId == null) {
         final res = await DioClient().dio.get(
           '/api/pemeriksa/lokasi/terbaru',
           queryParameters: {'survei_id': survey.id},
@@ -1038,9 +1084,32 @@ class TrackingPageController extends ChangeNotifier {
             .where((p) => isValidLatLng(p.latitude, p.longitude))
             .toList();
 
+        // Group by petugas (userId) then keep only the newest timestamp
+        // per petugas.
+        final latestByPetugas = <int?, petugas_location.PetugasLocation>{};
+        for (final p in parsed) {
+          final key = p.userId;
+          if (key == null) continue;
+          final prev = latestByPetugas[key];
+          if (prev == null) {
+            latestByPetugas[key] = p;
+            continue;
+          }
+
+          final prevT = prev.timestamp;
+          final curT = p.timestamp;
+          if (prevT == null && curT != null) {
+            latestByPetugas[key] = p;
+          } else if (prevT != null && curT != null && curT.isAfter(prevT)) {
+            latestByPetugas[key] = p;
+          }
+        }
+
+        final latestLocations = latestByPetugas.values.toList();
+
         petugasLocations
           ..clear()
-          ..addAll(parsed);
+          ..addAll(latestLocations);
         petugasMarkers = buildPetugasMarkers(context);
         petugasPolylines = buildPetugasPolylines();
         notifyListeners();
@@ -1095,10 +1164,43 @@ class TrackingPageController extends ChangeNotifier {
     }
 
     await WilayahService.clear();
-    await WilayahService.init();
-    await prefs.setInt(
-      'last_wilayah_sync',
-      DateTime.now().millisecondsSinceEpoch,
+    // Refresh wilayan harus mengikuti survei_id & role aktif user.
+    final dynamic roleRaw = survey.roleInSurvei;
+    final roleList = <String>[];
+    if (roleRaw is List) {
+      for (final e in roleRaw) {
+        if (e == null) continue;
+        roleList.add(e.toString());
+      }
+    } else if (roleRaw != null) {
+      final s = roleRaw.toString();
+      if (s.contains('[') && s.contains(']')) {
+        final cleaned = s
+            .toLowerCase()
+            .trim()
+            .replaceAll('[', '')
+            .replaceAll(']', '')
+            .replaceAll('"', '')
+            .replaceAll("'", '');
+        roleList..addAll(
+          cleaned
+              .split(',')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList(),
+        );
+      } else {
+        roleList.add(s);
+      }
+    }
+
+    final isPemeriksa = roleList
+        .map((e) => e.toLowerCase().trim())
+        .any((e) => e == 'pemeriksa');
+
+    await WilayahService.initFor(
+      surveiId: survey.id,
+      role: isPemeriksa ? 'pemeriksa' : 'petugas',
     );
 
     wilayahPolygons = WilayahService.wilayahPolygons;
@@ -1344,10 +1446,6 @@ class TrackingPageController extends ChangeNotifier {
     );
   }
 
-  // Target marker building uses page context; keep here only as a helper.
-
-  // Map selector + zoom kept in page for simplicity.
-
   LatLngBounds? _buildPolygonBounds(List<Polygon> selectedPolygons) {
     LatLngBounds? bounds;
     for (final polygon in selectedPolygons) {
@@ -1540,25 +1638,41 @@ class _PetugasListItem {
       return int.tryParse(v.toString());
     }
 
-    final rawName = [
-      json['name'],
-      json['nama'],
-      json['nama_petugas'],
-      json['namaPetugas'],
-      json['petugas_nama'],
-      json['full_name'],
-      json['fullName'],
-      json['petugasName'],
-      json['username'],
-    ].where((e) => e != null).toList();
+    final dynamic petugasJson = json['petugas'];
 
-    final name = rawName.isEmpty ? '' : rawName.first.toString().trim();
+    Map<String, dynamic>? petugasObj;
+    if (petugasJson is Map<String, dynamic>) {
+      petugasObj = petugasJson;
+    } else if (petugasJson is List && petugasJson.isNotEmpty) {
+      final first = petugasJson.first;
+      if (first is Map<String, dynamic>) {
+        petugasObj = first;
+      }
+    }
+
+    final idCandidate = petugasObj != null
+        ? (petugasObj!['id'] ??
+              petugasObj!['petugas_id'] ??
+              petugasObj!['user_id'])
+        : (json['id'] ?? json['petugas_id'] ?? json['user_id']);
+
+    final rawName =
+        (petugasObj != null
+                ? (petugasObj!['name'] ??
+                      petugasObj!['nama'] ??
+                      petugasObj!['nama_petugas'] ??
+                      petugasObj!['petugas_nama'] ??
+                      '')
+                : (json['name'] ?? json['nama'] ?? json['nama_petugas'] ?? ''))
+            .toString();
 
     return _PetugasListItem(
-      id: parseInt(json['id'] ?? json['petugas_id']),
-      name: name.isNotEmpty ? name : 'Tanpa Nama',
-      email: json['email']?.toString(),
-      role: json['role']?.toString(),
+      id: parseInt(idCandidate),
+      name: rawName.trim().isNotEmpty ? rawName.trim() : 'Tanpa Nama',
+      email: (petugasObj != null ? petugasObj!['email'] : json['email'])
+          ?.toString(),
+      role: (petugasObj != null ? petugasObj!['role'] : json['role'])
+          ?.toString(),
     );
   }
 }

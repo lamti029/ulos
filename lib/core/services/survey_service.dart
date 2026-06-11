@@ -7,7 +7,6 @@ class SurveyService {
 
   SurveyService({DioClient? dioClient}) : _dioClient = dioClient ?? DioClient();
 
-  /// Backward compatibility: gunakan endpoint survei berbasis user login.
   Future<List<SurveyModel>> fetchSurveys() async {
     return fetchSurveysForCurrentUser();
   }

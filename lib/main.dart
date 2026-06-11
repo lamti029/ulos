@@ -39,13 +39,6 @@ void main() async {
 
     debugPrint('[BOOT] BackgroundServiceHandler.initializeService() completed');
   }
-  // Safety net: make sure a stale background instance is not left running
-  // after install/update.
-  // debugPrint('[BOOT] BackgroundServiceHandler.ensureNotRunning()');
-  // await BackgroundServiceHandler.ensureNotRunning();
-  // debugPrint('[BOOT] BackgroundServiceHandler.ensureNotRunning() completed');
-
-  // Initialize FCM
 
   debugPrint('[BOOT] starting FcmService.initialize()');
   await FcmService.initialize();

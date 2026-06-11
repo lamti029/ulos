@@ -6,8 +6,14 @@ import '../../core/models/survey.dart';
 import '../../core/services/survey_service.dart';
 
 class SurveyCacheService {
-  static const String _surveysJsonKey = 'surveys_json';
-  static const String _lastSurveySyncMsKey = 'last_survey_sync_ms';
+  static const String _surveysJsonKeyPrefix = 'surveys_json_';
+  static const String _lastSurveySyncMsKeyPrefix = 'last_survey_sync_ms_';
+
+  static String _surveysJsonKeyForUser(int userId) =>
+      '$_surveysJsonKeyPrefix$userId';
+
+  static String _lastSurveySyncMsKeyForUser(int userId) =>
+      '$_lastSurveySyncMsKeyPrefix$userId';
 
   /// Untuk requirement saat ini: refresh survei hanya boleh dilakukan manual.
   /// Jadi auto-refresh interval tidak dipakai.
@@ -16,9 +22,12 @@ class SurveyCacheService {
   /// Cooldown agar tombol Refresh tidak memicu request berulang.
   static const Duration manualRefreshCooldown = Duration(hours: 1);
 
-  static Future<List<SurveyModel>> loadCachedSurveys() async {
+  static Future<List<SurveyModel>> loadCachedSurveys({
+    required int userId,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
-    final jsonStr = prefs.getString(_surveysJsonKey);
+    final jsonStr = prefs.getString(_surveysJsonKeyForUser(userId));
+
     if (jsonStr == null || jsonStr.isEmpty) return const [];
 
     try {
@@ -34,14 +43,17 @@ class SurveyCacheService {
     }
   }
 
-  static Future<DateTime?> loadLastSyncTime() async {
+  static Future<DateTime?> loadLastSyncTime({required int userId}) async {
     final prefs = await SharedPreferences.getInstance();
-    final ms = prefs.getInt(_lastSurveySyncMsKey);
+    final ms = prefs.getInt(_lastSurveySyncMsKeyForUser(userId));
     if (ms == null || ms == 0) return null;
     return DateTime.fromMillisecondsSinceEpoch(ms);
   }
 
-  static Future<void> saveSurveysToCache(List<SurveyModel> surveys) async {
+  static Future<void> saveSurveysToCache({
+    required int userId,
+    required List<SurveyModel> surveys,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
 
     final payload = surveys
@@ -55,9 +67,9 @@ class SurveyCacheService {
         )
         .toList();
 
-    await prefs.setString(_surveysJsonKey, jsonEncode(payload));
+    await prefs.setString(_surveysJsonKeyForUser(userId), jsonEncode(payload));
     await prefs.setInt(
-      _lastSurveySyncMsKey,
+      _lastSurveySyncMsKeyForUser(userId),
       DateTime.now().millisecondsSinceEpoch,
     );
   }
@@ -67,10 +79,13 @@ class SurveyCacheService {
   static Future<bool> shouldAutoRefresh() async => false;
 
   /// Guard untuk refresh manual agar paling cepat sekali dalam 1 jam.
-  static Future<bool> canRefreshNow({required bool force}) async {
+  static Future<bool> canRefreshNow({
+    required bool force,
+    required int userId,
+  }) async {
     if (!force) return false;
 
-    final last = await loadLastSyncTime();
+    final last = await loadLastSyncTime(userId: userId);
     if (last == null) return true;
 
     return DateTime.now().difference(last) >= manualRefreshCooldown;
@@ -78,13 +93,21 @@ class SurveyCacheService {
 
   static Future<void> refreshCacheIfNeeded({
     required SurveyService surveyService,
+    required int userId,
     bool force = false,
   }) async {
-    final cached = await loadCachedSurveys();
+    final cached = await loadCachedSurveys(userId: userId);
     final should = force || cached.isEmpty || await shouldAutoRefresh();
     if (!should) return;
 
     final surveys = await surveyService.fetchSurveys();
-    await saveSurveysToCache(surveys);
+    await saveSurveysToCache(userId: userId, surveys: surveys);
+  }
+
+  /// Clear cache for a specific user.
+  static Future<void> clearForUser(int userId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_surveysJsonKeyForUser(userId));
+    await prefs.remove(_lastSurveySyncMsKeyForUser(userId));
   }
 }

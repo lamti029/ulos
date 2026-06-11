@@ -22,9 +22,10 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
 
       onCreate: _createDB,
+
       onUpgrade: (db, oldVersion, newVersion) async {
         // Migrate existing installs to the latest schema.
         // v1 -> v2: add battery_level column.
@@ -50,6 +51,17 @@ class DatabaseHelper {
             );
           }
         }
+
+        // v3 -> v4: add user_id column (for history scoping).
+        if (oldVersion < 4) {
+          final columns = await db.rawQuery('PRAGMA table_info(locations)');
+          final hasUserId = columns.any((c) => c['name'] == 'user_id');
+          if (!hasUserId) {
+            await db.execute(
+              'ALTER TABLE locations ADD COLUMN user_id INTEGER',
+            );
+          }
+        }
       },
     );
   }
@@ -67,6 +79,7 @@ class DatabaseHelper {
       is_mocked INTEGER DEFAULT 0,
       survei_id INTEGER,
       session_id INTEGER,
+      user_id INTEGER,
       battery_level INTEGER,
       is_synced INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now'))
@@ -86,4 +99,7 @@ class DatabaseHelper {
   static const String colSurveiId = 'survei_id';
   static const String colIsSynced = 'is_synced';
   static const String colCreatedAt = 'created_at';
+
+  // New: owner of this local record (so history can be scoped per user)
+  static const String colUserId = 'user_id';
 }

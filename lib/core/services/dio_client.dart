@@ -101,10 +101,8 @@ class DioClient {
             }
           }
 
-          // Session expired/invalid
           if (e.response?.statusCode == 401) {
             clearSessionIfNeeded();
-
             handler.reject(
               DioException(
                 requestOptions: e.requestOptions,

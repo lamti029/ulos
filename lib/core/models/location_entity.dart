@@ -3,6 +3,7 @@ import 'package:latlong2/latlong.dart';
 /// Represents a single captured GPS point stored in the local SQLite database.
 class LocationEntity {
   final int? id;
+  final int? userId;
   final double lat;
   final double lng;
   final DateTime timestamp;
@@ -19,6 +20,7 @@ class LocationEntity {
 
   const LocationEntity({
     this.id,
+    this.userId,
     required this.lat,
     required this.lng,
     required this.timestamp,
@@ -46,6 +48,7 @@ class LocationEntity {
       'is_mocked': isMocked ? 1 : 0,
       'survei_id': surveiId,
       'session_id': sessionId,
+      'user_id': userId,
       'battery_level': batteryLevel,
 
       'is_synced': isSynced ? 1 : 0,
@@ -66,6 +69,7 @@ class LocationEntity {
       isMocked: map['is_mocked'] == 1,
       surveiId: map['survei_id'] as int?,
       sessionId: map['session_id'] as int?,
+      userId: map['user_id'] as int?,
       batteryLevel: map['battery_level'] as int?,
 
       isSynced: map['is_synced'] == 1,
@@ -86,6 +90,7 @@ class LocationEntity {
       'is_mocked': isMocked,
       'survei_id': surveiId,
       'session_id': sessionId,
+      'user_id': userId,
       'battery_level': batteryLevel,
       'timestamp': timestamp.toUtc().toIso8601String(),
     };
@@ -96,6 +101,7 @@ class LocationEntity {
 
   LocationEntity copyWith({
     int? id,
+    int? userId,
     double? lat,
     double? lng,
     DateTime? timestamp,
@@ -121,6 +127,7 @@ class LocationEntity {
       isMocked: isMocked ?? this.isMocked,
       surveiId: surveiId ?? this.surveiId,
       sessionId: sessionId ?? this.sessionId,
+      userId: userId ?? this.userId,
       batteryLevel: batteryLevel ?? this.batteryLevel,
 
       isSynced: isSynced ?? this.isSynced,

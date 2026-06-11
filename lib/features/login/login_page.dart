@@ -4,6 +4,8 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/api_constants.dart';
 import '../../core/services/dio_client.dart';
+import '../../core/utils/jwt_utils.dart';
+
 import '../home/home_page.dart';
 import '../home/survey_cache_service.dart';
 import '../../core/services/survey_service.dart';
@@ -76,16 +78,18 @@ class _LoginPageState extends State<LoginPage> {
           }
           // Fetch surveys once after login + cache them
           try {
-            await SurveyCacheService.refreshCacheIfNeeded(
-              surveyService: SurveyService(),
-              force: true,
-            );
+            final userId = await JwtUtils.getUserId();
+            if (userId != null) {
+              await SurveyCacheService.refreshCacheIfNeeded(
+                surveyService: SurveyService(),
+                userId: userId,
+                force: true,
+              );
+            }
           } catch (_) {
             // ignore cache refresh errors; Home will fallback to cache/auto refresh
           }
 
-          // Fetch wilayah and target points once after login
-          await WilayahService.init();
           if (!mounted) return;
           Navigator.of(context).pushReplacement(
             MaterialPageRoute(builder: (_) => const HomePage()),
