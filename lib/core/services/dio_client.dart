@@ -5,7 +5,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../constants/api_constants.dart';
 import '../constants/app_constants.dart';
 
-/// Exception thrown when a CORS error is detected on the web platform.
 class CorsException implements Exception {
   final String message;
   CorsException(this.message);
@@ -34,31 +33,21 @@ class DioClient {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
-        // Do not throw on 4xx/5xx so we can inspect the real response.
         validateStatus: (status) => true,
       ),
     );
-
-    // Dev-only TLS debug toggle.
-    // NOTE: Overriding certificate validation is insecure; keep it strictly off by default.
     final bool allowBadCertificates = const bool.fromEnvironment(
       'ALLOW_BAD_CERTS',
       defaultValue: false,
     );
 
     assert(() {
-      // ignore: avoid_print
-      print('[DioClient] ALLOW_BAD_CERTS=$allowBadCertificates');
+      debugPrint('[DioClient] ALLOW_BAD_CERTS=$allowBadCertificates');
       return true;
     }());
 
-    // NOTE: Intentionally not implementing certificate override here.
-    // The exact API for disabling TLS verification is platform-dependent and
-    // differs between Flutter web vs mobile/desktop.
-    // Keep this toggle as a diagnostic flag for now.
     if (allowBadCertificates) {
-      // ignore: avoid_print
-      print(
+      debugPrint(
         '[DioClient] ALLOW_BAD_CERTS=true but certificate override is disabled in this build.',
       );
     }
@@ -98,7 +87,6 @@ class DioClient {
               return;
             }
 
-            // CORS / general network failures on web
             if (kIsWeb) {
               final corsMsg =
                   'Cannot connect to $uri. Please check your internet connection';
@@ -113,12 +101,8 @@ class DioClient {
             }
           }
 
-          // Session expired/invalid
           if (e.response?.statusCode == 401) {
-            // Clear token so next app open / next splash check redirects to login.
-            // Note: No navigation here (no BuildContext). UI redirection happens in SplashPage.
             clearSessionIfNeeded();
-
             handler.reject(
               DioException(
                 requestOptions: e.requestOptions,
@@ -146,6 +130,7 @@ class DioClient {
     DioClient()
         .clearToken()
         .then((_) => DioClient().clearUserName())
+        .then((_) => DioClient().clearEmail())
         .whenComplete(() => _isClearingSession = false);
   }
 
@@ -177,5 +162,20 @@ class DioClient {
   Future<String?> getUserName() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(AppConstants.userNameKey);
+  }
+
+  Future<void> setEmail(String email) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(AppConstants.email, email);
+  }
+
+  Future<String?> getEmail() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(AppConstants.email);
+  }
+
+  Future<void> clearEmail() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(AppConstants.email);
   }
 }

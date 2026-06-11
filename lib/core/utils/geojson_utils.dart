@@ -2,8 +2,6 @@ import 'dart:convert';
 import 'package:latlong2/latlong.dart';
 
 class GeoJsonUtils {
-  /// Parse a GeoJSON Polygon or MultiPolygon string into a list of
-  /// coordinate rings (each ring is a List<LatLng>).
   static List<List<LatLng>> parseGeoJson(String geoJsonString) {
     final List<List<LatLng>> result = [];
     try {
@@ -14,7 +12,6 @@ class GeoJsonUtils {
       if (type == 'Polygon') {
         final List<dynamic> coordinates =
             geoJson['coordinates'] as List<dynamic>;
-        // coordinates is a list of rings; we take the first (exterior) ring
         if (coordinates.isNotEmpty) {
           final ring = coordinates.first as List<dynamic>;
           result.add(_parseRing(ring));
@@ -30,9 +27,7 @@ class GeoJsonUtils {
           }
         }
       }
-    } catch (e) {
-      // Silently ignore malformed GeoJSON
-    }
+    } catch (e) {}
     return result;
   }
 

@@ -1,0 +1,30 @@
+{
+  "distanceFilterMeters": {
+    "defaultValue": {
+      "value": 30
+    },
+    "valueType": "NUMBER",
+    "description": "Jarak minimum (dalam meter) sebelum lokasi baru direkam."
+  },
+  "locationIntervalSeconds": {
+    "defaultValue": {
+      "value": 30
+    },
+    "valueType": "NUMBER",
+    "description": "Interval waktu (dalam detik) untuk mengambil data lokasi baru."
+  },
+  "flushIntervalSeconds": {
+    "defaultValue": {
+      "value": 60
+    },
+    "valueType": "NUMBER",
+    "description": "Interval waktu (dalam detik) untuk memindahkan data dari buffer ke lokal storage."
+  },
+  "syncIntervalSeconds": {
+    "defaultValue": {
+      "value": 300
+    },
+    "valueType": "NUMBER",
+    "description": "Interval waktu (dalam detik) untuk mensinkronisasikan data lokasi ke server."
+  }
+}

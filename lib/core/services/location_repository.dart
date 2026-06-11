@@ -4,21 +4,29 @@ import 'package:sqflite/sqflite.dart';
 import '../database/database_helper.dart';
 import '../models/location_entity.dart';
 
-/// Repository for location CRUD operations using sqflite.
-/// Handles batch inserts, time-range queries, sync status updates,
-/// and conversion to LatLng lists for map display.
 class LocationRepository {
   final Logger _logger = Logger();
   final DatabaseHelper _dbHelper = DatabaseHelper.instance;
+
+  /// Delete only synced rows for a specific day (UTC-based day boundaries).
+  Future<int> deleteSyncedForDay(DateTime day) async {
+    final db = await _dbHelper.database;
+
+    final startUtc = DateTime.utc(day.year, day.month, day.day);
+    final endUtc = startUtc.add(const Duration(days: 1));
+
+    return db.delete(
+      DatabaseHelper.tableLocations,
+      where:
+          '${DatabaseHelper.colIsSynced} = ? AND ${DatabaseHelper.colTimestamp} >= ? AND ${DatabaseHelper.colTimestamp} < ?',
+      whereArgs: [1, startUtc.toIso8601String(), endUtc.toIso8601String()],
+    );
+  }
 
   Future<void> initialize() async {
     await _dbHelper.database;
     _logger.i('LocationRepository initialized');
   }
-
-  // ------------------------------------------------------------------
-  // Insert
-  // ------------------------------------------------------------------
 
   /// Insert a single location.
   Future<int> insert(LocationEntity location) async {
@@ -27,7 +35,6 @@ class LocationRepository {
   }
 
   /// Batch insert multiple locations inside a single transaction.
-  /// This minimizes I/O overhead compared to individual inserts.
   Future<List<int>> insertBatch(List<LocationEntity> locations) async {
     if (locations.isEmpty) return [];
 
@@ -49,48 +56,132 @@ class LocationRepository {
     return ids;
   }
 
-  // ------------------------------------------------------------------
-  // Query
-  // ------------------------------------------------------------------
-
-  /// Get all locations ordered by timestamp (oldest first).
-  Future<List<LocationEntity>> getAll({int? limit}) async {
+  /// Get all locations for specific user ordered by timestamp (newest first).
+  Future<List<LocationEntity>> getAllByUserId(int userId, {int? limit}) async {
     final db = await _dbHelper.database;
     final maps = await db.query(
       DatabaseHelper.tableLocations,
+      where: '${DatabaseHelper.colUserId} = ?',
+      whereArgs: [userId],
       orderBy: '${DatabaseHelper.colTimestamp} DESC',
       limit: limit,
     );
     return maps.map((m) => LocationEntity.fromMap(m)).toList();
   }
 
-  /// Query locations within a specific time range (inclusive).
-  /// Returns ordered by timestamp ascending for route display.
-  Future<List<LocationEntity>> getBetween({
-    required DateTime start,
-    required DateTime end,
+  Future<List<LocationEntity>> getAllBySurveiId({
+    required int surveiId,
+    int? limit,
+  }) async {
+    final db = await _dbHelper.database;
+    final maps = await db.query(
+      DatabaseHelper.tableLocations,
+      where: '${DatabaseHelper.colSurveiId} = ?',
+      whereArgs: [surveiId],
+      orderBy: '${DatabaseHelper.colTimestamp} DESC',
+      limit: limit,
+    );
+    return maps.map((m) => LocationEntity.fromMap(m)).toList();
+  }
+
+  Future<List<LocationEntity>> getAllBySurveiIdAndUserId({
+    required int surveiId,
+    required int userId,
+    int? limit,
   }) async {
     final db = await _dbHelper.database;
     final maps = await db.query(
       DatabaseHelper.tableLocations,
       where:
-          '${DatabaseHelper.colTimestamp} >= ? AND ${DatabaseHelper.colTimestamp} <= ?',
-      whereArgs: [
-        start.toUtc().toIso8601String(),
-        end.toUtc().toIso8601String(),
-      ],
+          '${DatabaseHelper.colSurveiId} = ? AND ${DatabaseHelper.colUserId} = ?',
+      whereArgs: [surveiId, userId],
+      orderBy: '${DatabaseHelper.colTimestamp} DESC',
+      limit: limit,
+    );
+    return maps.map((m) => LocationEntity.fromMap(m)).toList();
+  }
+
+  Future<List<LocationEntity>> getBetween({
+    required DateTime start,
+    required DateTime end,
+    int? userId,
+  }) async {
+    final db = await _dbHelper.database;
+    final whereParts = <String>[
+      '${DatabaseHelper.colTimestamp} >= ? AND ${DatabaseHelper.colTimestamp} <= ?',
+    ];
+    final whereArgs = <Object>[
+      start.toUtc().toIso8601String(),
+      end.toUtc().toIso8601String(),
+    ];
+
+    if (userId != null) {
+      whereParts.add('${DatabaseHelper.colUserId} = ?');
+      whereArgs.add(userId);
+    }
+
+    final whereClause = whereParts.join(' AND ');
+
+    final maps = await db.query(
+      DatabaseHelper.tableLocations,
+      where: whereClause,
+      whereArgs: whereArgs,
+      orderBy: '${DatabaseHelper.colTimestamp} DESC',
+    );
+    return maps.map((m) => LocationEntity.fromMap(m)).toList();
+  }
+
+  Future<List<LocationEntity>> getBetweenBySurveiId({
+    required int surveiId,
+    required DateTime start,
+    required DateTime end,
+    int? userId,
+  }) async {
+    final db = await _dbHelper.database;
+    final whereParts = <String>[
+      '${DatabaseHelper.colSurveiId} = ?',
+      '${DatabaseHelper.colTimestamp} >= ? AND ${DatabaseHelper.colTimestamp} <= ?',
+    ];
+    final whereArgs = <Object>[
+      surveiId,
+      start.toUtc().toIso8601String(),
+      end.toUtc().toIso8601String(),
+    ];
+
+    if (userId != null) {
+      whereParts.add('${DatabaseHelper.colUserId} = ?');
+      whereArgs.add(userId);
+    }
+
+    final whereClause = whereParts.join(' AND ');
+
+    final maps = await db.query(
+      DatabaseHelper.tableLocations,
+      where: whereClause,
+      whereArgs: whereArgs,
       orderBy: '${DatabaseHelper.colTimestamp} DESC',
     );
     return maps.map((m) => LocationEntity.fromMap(m)).toList();
   }
 
   /// Get locations that haven't been synced to the server yet.
-  Future<List<LocationEntity>> getUnsynced({int? limit}) async {
+  Future<List<LocationEntity>> getUnsynced({int? limit, int? userId}) async {
     final db = await _dbHelper.database;
+
+    final whereParts = <String>['${DatabaseHelper.colIsSynced} = ?'];
+    final whereArgs = <Object>[0];
+
+    if (userId != null) {
+      whereParts.add('${DatabaseHelper.colUserId} = ?');
+      whereArgs.add(userId);
+    }
+
+    final whereClause = whereParts.join(' AND ');
+
     final maps = await db.query(
       DatabaseHelper.tableLocations,
-      where: '${DatabaseHelper.colIsSynced} = ?',
-      whereArgs: [0],
+      where: whereClause,
+      whereArgs: whereArgs,
       orderBy: '${DatabaseHelper.colTimestamp} ASC',
       limit: limit,
     );
@@ -127,10 +218,6 @@ class LocationRepository {
     return locations.map((l) => l.toLatLng()).toList();
   }
 
-  // ------------------------------------------------------------------
-  // Update
-  // ------------------------------------------------------------------
-
   /// Mark specific locations as synced after successful API upload.
   Future<int> markAsSynced(List<int> ids) async {
     if (ids.isEmpty) return 0;
@@ -149,14 +236,20 @@ class LocationRepository {
     return count;
   }
 
-  // ------------------------------------------------------------------
-  // Delete
-  // ------------------------------------------------------------------
-
   /// Delete all locations (use with caution — mainly for testing).
   Future<int> deleteAll() async {
     final db = await _dbHelper.database;
     return db.delete(DatabaseHelper.tableLocations);
+  }
+
+  /// Delete locations for a specific survei.
+  Future<int> deleteAllBySurveiId(int surveiId) async {
+    final db = await _dbHelper.database;
+    return db.delete(
+      DatabaseHelper.tableLocations,
+      where: '${DatabaseHelper.colSurveiId} = ?',
+      whereArgs: [surveiId],
+    );
   }
 
   /// Delete locations older than a certain date.

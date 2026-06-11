@@ -4,16 +4,11 @@ import '../models/location_entity.dart';
 import 'background_service_handler.dart';
 
 /// Background service that continuously captures GPS positions,
-/// applies a distance filter, buffers points in memory, and
-/// periodically flushes them to SQLite in batches.
-///
-/// This dramatically reduces storage I/O compared to writing every
-/// single position immediately to the database.
 class BackgroundLocationService {
   final Logger _logger = Logger();
 
   /// Distance filter in meters. Only save if user moved at least this far.
-  final double distanceFilterMeters;
+  final int distanceFilterMeters;
 
   /// How often to capture a GPS reading (seconds).
   final int locationIntervalSeconds;
@@ -21,10 +16,13 @@ class BackgroundLocationService {
   /// How often to flush the in-memory buffer to SQLite (seconds).
   final int flushIntervalSeconds;
 
+  final int syncIntervalSeconds;
+
   BackgroundLocationService({
-    this.distanceFilterMeters = 0.0,
-    this.locationIntervalSeconds = 10,
+    this.distanceFilterMeters = 30,
+    this.locationIntervalSeconds = 30,
     this.flushIntervalSeconds = 60,
+    this.syncIntervalSeconds = 300,
   });
 
   Future<bool> get isRunning async =>
@@ -35,7 +33,8 @@ class BackgroundLocationService {
   void start({int? surveiId}) {
     BackgroundServiceHandler.startTracking(
       distanceFilterMeters: distanceFilterMeters,
-      surveiId: surveiId ?? 2,
+      surveiId: surveiId,
+      syncIntervalSeconds: syncIntervalSeconds,
     );
 
     _logger.i(
@@ -46,18 +45,14 @@ class BackgroundLocationService {
 
   /// Stop capturing locations and flush any remaining buffered data.
   Future<void> stop() async {
+    // Drain unsynced locations to server before stopping background isolate.
+    await BackgroundServiceHandler.syncAllUnsyncedAndStop();
     await BackgroundServiceHandler.stopTracking();
-    await BackgroundServiceHandler.flushNow();
 
     _logger.i('BackgroundLocationService stopped');
   }
 
-  /// Immediate flush — useful when user stops tracking manually.
   Future<void> flushNow() async {
     await BackgroundServiceHandler.flushNow();
   }
-
-  // _onPosition moved to handler for stream listener
-
-  // Flush delegated to isolate; no local buffer needed
 }

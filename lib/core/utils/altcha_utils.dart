@@ -1,8 +1,6 @@
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
 
-/// ALTCHA challenge response from server.
-/// The server sends `maxnumber` (upper bound), not `number`.
 class AltchaChallenge {
   final String algorithm;
   final String challenge;
@@ -19,27 +17,28 @@ class AltchaChallenge {
   });
 
   factory AltchaChallenge.fromJson(Map<String, dynamic> json) {
+    final rawMaxNumber = json['maxNumber'] ?? json['maxnumber'];
+
+    final maxNumberInt = rawMaxNumber is int
+        ? rawMaxNumber
+        : rawMaxNumber is num
+        ? rawMaxNumber.toInt()
+        : int.tryParse(rawMaxNumber?.toString() ?? '') ?? 0;
+
     return AltchaChallenge(
-      algorithm: json['algorithm'] as String,
-      challenge: json['challenge'] as String,
-      salt: json['salt'] as String,
-      signature: json['signature'] as String,
-      maxnumber: json['maxNumber'] as int,
+      algorithm: (json['algorithm'] ?? '').toString(),
+      challenge: (json['challenge'] ?? '').toString(),
+      salt: (json['salt'] ?? '').toString(),
+      signature: (json['signature'] ?? '').toString(),
+      maxnumber: maxNumberInt,
     );
   }
 }
 
 /// Utility to solve ALTCHA proof-of-work challenges.
 class AltchaUtils {
-  /// Solve the ALTCHA challenge by finding a `number` where
-  /// SHA-256(salt + number) equals the challenge hex string.
-  ///
-  /// The salt is used as-is (including query params like `?expires=...&`);
-  /// it is NOT base64-decoded. The hash input is simply the UTF-8 bytes of
-  /// `salt + number.toString()`, matching the official altcha-lib-go impl.
   static Future<String> solveChallenge(AltchaChallenge challenge) async {
     for (var i = 0; i <= challenge.maxnumber; i++) {
-      // Yield to event loop every 1000 iterations to keep UI responsive.
       if (i % 1000 == 0) {
         await Future.delayed(Duration.zero);
       }
@@ -48,9 +47,7 @@ class AltchaUtils {
       final hash = sha256.convert(payload);
       final hashHex = hash.toString();
 
-      // The correct number is the one where the hash EQUALS the challenge.
       if (hashHex == challenge.challenge) {
-        // Found solution — build the payload exactly as ALTCHA expects.
         final solution = {
           'algorithm': challenge.algorithm,
           'challenge': challenge.challenge,

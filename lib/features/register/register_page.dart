@@ -26,6 +26,7 @@ class _RegisterPageState extends State<RegisterPage> {
   final _kabupatenController = TextEditingController();
 
   bool _isLoading = false;
+
   bool _isAltchaSolving = false;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
@@ -85,6 +86,7 @@ class _RegisterPageState extends State<RegisterPage> {
     try {
       // 1. Fetch ALTCHA challenge
       setState(() => _isAltchaSolving = true);
+
       final challengeResponse = await DioClient().dio.get(
         ApiConstants.altchaChallenge,
       );
@@ -95,17 +97,27 @@ class _RegisterPageState extends State<RegisterPage> {
 
       final challengeData =
           challengeResponse.data['data'] as Map<String, dynamic>;
+
+      // Debug: see exact challenge payload shape
+      debugPrint(
+        '[RegisterPage] altcha challengeData keys=${challengeData.keys.toList()}',
+      );
+
       final challenge = AltchaChallenge.fromJson(challengeData);
 
       // 2. Solve ALTCHA challenge
       final altchaToken = await AltchaUtils.solveChallenge(challenge);
-
+      debugPrint('ok');
       setState(() {
         _isAltchaSolving = false;
         _altchaProgress = 1.0;
       });
 
       // 3. Submit registration
+      debugPrint(
+        '[RegisterPage] submitting register payload altcha_key=altcha altcha_token_prefix=${altchaToken.substring(0, altchaToken.length >= 12 ? 12 : altchaToken.length)}...',
+      );
+
       final response = await DioClient().dio.post(
         ApiConstants.register,
         data: {
@@ -115,6 +127,7 @@ class _RegisterPageState extends State<RegisterPage> {
           'no_hp': _noHpController.text.trim(),
           'kode_kab': _selectedKodeKab ?? '',
           'altcha': altchaToken,
+          'role_name': 'petugas',
         },
       );
 

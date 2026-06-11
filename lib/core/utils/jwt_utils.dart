@@ -67,4 +67,14 @@ class JwtUtils {
     if (name is String && name.isNotEmpty) return name;
     return null;
   }
+
+  static Future<String?> getEmail() async {
+    final token = await DioClient().getToken();
+    if (token == null || token.isEmpty) return null;
+    final payload = _decodePayload(token);
+    if (payload == null) return null;
+    final email = payload['email'];
+    if (email is String && email.isNotEmpty) return email;
+    return null;
+  }
 }

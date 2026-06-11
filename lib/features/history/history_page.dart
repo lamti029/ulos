@@ -8,7 +8,10 @@ import '../../core/models/location_entity.dart';
 import '../../core/services/location_repository.dart';
 
 class HistoryPage extends StatefulWidget {
-  const HistoryPage({super.key});
+  final int surveiId;
+  final int? userId;
+
+  const HistoryPage({super.key, required this.surveiId, required this.userId});
 
   @override
   State<HistoryPage> createState() => _HistoryPageState();
@@ -17,8 +20,13 @@ class HistoryPage extends StatefulWidget {
 class _HistoryPageState extends State<HistoryPage> {
   final LocationRepository _repository = LocationRepository();
 
+  int? get _userId => widget.userId;
+
+  int get _surveiId => widget.surveiId;
+
   List<LocationEntity> _locations = [];
-  List<LatLng> _routePoints = [];
+  Map<int?, List<LatLng>> _routePointsBySession = {};
+
   bool _isLoading = true;
 
   // Date filters
@@ -34,26 +42,62 @@ class _HistoryPageState extends State<HistoryPage> {
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
 
-    List<LocationEntity> locations;
-    if (_startDate != null && _endDate != null) {
-      locations = await _repository.getBetween(
-        start: _startDate!,
-        end: _endDate!
-            .add(const Duration(days: 1))
-            .subtract(const Duration(seconds: 1)),
-      );
-    } else {
-      locations = await _repository.getAll(limit: 500);
-    }
+    try {
+      List<LocationEntity> locations;
+      if (_startDate != null && _endDate != null) {
+        locations = await _repository.getBetweenBySurveiId(
+          surveiId: _surveiId,
 
-    final routePoints = locations.map((l) => l.toLatLng()).toList();
+          start: _startDate!,
+          end: _endDate!
+              .add(const Duration(days: 1))
+              .subtract(const Duration(seconds: 1)),
+        );
+      } else {
+        if (_userId != null) {
+          locations = await _repository.getAllBySurveiIdAndUserId(
+            surveiId: _surveiId,
+            userId: _userId!,
+            limit: 100,
+          );
+        } else {
+          locations = await _repository.getAllBySurveiId(
+            surveiId: _surveiId,
+            limit: 100,
+          );
+        }
+      }
 
-    if (mounted) {
-      setState(() {
-        _locations = locations;
-        _routePoints = routePoints;
-        _isLoading = false;
-      });
+      // Group points by sessionId to avoid connecting different sessions.
+      final Map<int?, List<LatLng>> routePointsBySession = {};
+      for (final l in locations) {
+        final sid = l.sessionId;
+        routePointsBySession.putIfAbsent(sid, () => []).add(l.toLatLng());
+      }
+
+      if (mounted) {
+        setState(() {
+          _locations = locations;
+          _routePointsBySession = routePointsBySession;
+          _isLoading = false;
+        });
+      }
+    } catch (e, st) {
+      debugPrint('[HistoryPage] _loadData error: $e\n$st');
+      if (mounted) {
+        setState(() {
+          _locations = [];
+          _routePointsBySession = {};
+          _isLoading = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Gagal memuat history: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
     }
   }
 
@@ -85,7 +129,7 @@ class _HistoryPageState extends State<HistoryPage> {
       if (mounted) {
         setState(() {
           _locations = [];
-          _routePoints = [];
+          _routePointsBySession = {};
         });
         ScaffoldMessenger.of(
           context,
@@ -180,8 +224,8 @@ class _HistoryPageState extends State<HistoryPage> {
                     ),
                   ),
 
-                  // Map with route
-                  if (_routePoints.isNotEmpty)
+                  // Map with route (separated by session_id)
+                  if (_routePointsBySession.values.any((pts) => pts.isNotEmpty))
                     SliverToBoxAdapter(
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
@@ -191,7 +235,12 @@ class _HistoryPageState extends State<HistoryPage> {
                             height: 240,
                             child: FlutterMap(
                               options: MapOptions(
-                                initialCenter: _routePoints.first,
+                                initialCenter: _routePointsBySession.values
+                                    .firstWhere(
+                                      (pts) => pts.isNotEmpty,
+                                      orElse: () => const [LatLng(0, 0)],
+                                    )
+                                    .first,
                                 initialZoom: 14,
                               ),
                               children: [
@@ -201,52 +250,21 @@ class _HistoryPageState extends State<HistoryPage> {
                                   userAgentPackageName: 'com.ulos.app',
                                 ),
                                 PolylineLayer(
-                                  polylines: [
-                                    Polyline(
-                                      points: _routePoints,
-                                      strokeWidth: 4,
-                                      color: AppColors.primary,
-                                    ),
-                                  ],
-                                ),
-                                MarkerLayer(
-                                  markers: [
-                                    // Start marker
-                                    Marker(
-                                      point: _routePoints.first,
-                                      width: 36,
-                                      height: 36,
-                                      child: Container(
-                                        decoration: const BoxDecoration(
-                                          color: AppColors.success,
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: const Icon(
-                                          Icons.play_arrow,
-                                          color: Colors.white,
-                                          size: 18,
-                                        ),
-                                      ),
-                                    ),
-                                    // End marker
-                                    if (_routePoints.length > 1)
-                                      Marker(
-                                        point: _routePoints.last,
-                                        width: 36,
-                                        height: 36,
-                                        child: Container(
-                                          decoration: const BoxDecoration(
-                                            color: AppColors.error,
-                                            shape: BoxShape.circle,
-                                          ),
-                                          child: const Icon(
-                                            Icons.stop,
-                                            color: Colors.white,
-                                            size: 18,
-                                          ),
-                                        ),
-                                      ),
-                                  ],
+                                  polylines: _routePointsBySession.entries
+                                      .where((e) => e.value.length >= 2)
+                                      .map((e) {
+                                        final sid = e.key;
+                                        final pts = e.value;
+                                        final color = sid == null
+                                            ? AppColors.primary
+                                            : AppColors.secondary;
+                                        return Polyline(
+                                          points: pts,
+                                          strokeWidth: 4,
+                                          color: color,
+                                        );
+                                      })
+                                      .toList(),
                                 ),
                               ],
                             ),
@@ -400,7 +418,7 @@ class _LocationCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Lat: $latitude, Lng: $longitude',
+                    'Lat: $latitude, Long: $longitude',
                     style: const TextStyle(
                       fontWeight: FontWeight.w500,
                       fontSize: 14,

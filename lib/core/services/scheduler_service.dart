@@ -7,11 +7,6 @@ import 'location_sync_service.dart';
 import '../models/location_entity.dart';
 import 'location_repository.dart';
 
-/// Orchestrates background location capture and server synchronization.
-///
-/// Replaces the old SharedPreferences-based approach with:
-/// - BackgroundLocationService: captures GPS, distance filter, batch insert to SQLite
-/// - LocationSyncService: periodic sync of unsynced rows to the server
 class SchedulerService {
   final Logger _logger = Logger();
 
@@ -22,7 +17,6 @@ class SchedulerService {
 
   static SchedulerService? _instance;
 
-  /// Singleton factory constructor
   factory SchedulerService({
     BackgroundLocationService? bgService,
     LocationSyncService? syncService,
@@ -34,7 +28,6 @@ class SchedulerService {
     return _instance!;
   }
 
-  /// Private constructor for singleton
   SchedulerService._internal({
     BackgroundLocationService? bgService,
     LocationSyncService? syncService,
@@ -47,28 +40,23 @@ class SchedulerService {
            ),
        _syncService =
            syncService ??
-           LocationSyncService(
-             syncIntervalSeconds: EnvService.syncIntervalSeconds,
-             batchLimit: EnvService.batchLimit,
-           );
+           LocationSyncService(batchLimit: EnvService.batchLimit);
 
-  /// Get singleton instance directly
   static SchedulerService get instance => SchedulerService();
 
   static Future<bool> get isRunning async {
-    if (_instance == null) return false;
-    final bgRunning = await BackgroundServiceHandler.isRunning();
-    return _instance!._isRunning && bgRunning;
+    return await BackgroundServiceHandler.isRunning();
   }
 
-  /// Start both background capture and periodic sync.
   Future<void> start({
     required int locationIntervalSeconds,
     required int batchIntervalSeconds,
     int? surveiId,
   }) async {
-    if (_isRunning) {
-      _logger.i('SchedulerService already running, ignoring start');
+    final bgRunning = await BackgroundServiceHandler.isRunning();
+    if (_isRunning && bgRunning) {
+      _logger.d('SchedulerService already running, ignoring start');
+
       return;
     }
     _isRunning = true;
@@ -76,29 +64,32 @@ class SchedulerService {
     _logger.i('SchedulerService started');
 
     _bgService.start(surveiId: surveiId);
-    _syncService.start();
   }
 
-  /// Stop both services and perform a final flush + sync.
   Future<void> stop() async {
-    if (!_isRunning) {
+    final bgRunning = await BackgroundServiceHandler.isRunning();
+    if (!_isRunning && !bgRunning) {
       _logger.i('SchedulerService not running, ignoring stop');
       return;
     }
     _isRunning = false;
 
-    // Flush any remaining buffered locations to SQLite.
     await _bgService.stop();
 
-    // One final sync attempt.
+    const int maxWaitMs = 3000;
+    const int stepMs = 100;
+    var waited = 0;
+    while (waited < maxWaitMs) {
+      final running = await BackgroundServiceHandler.isRunning();
+      if (!running) break;
+      await Future.delayed(Duration(milliseconds: stepMs));
+      waited += stepMs;
+    }
     await _syncService.syncNow();
-    _syncService.stop();
 
     _logger.i('SchedulerService stopped');
   }
 
-  /// Send an immediate batch (e.g. first location on tracking start).
-  /// This persists the provided locations to SQLite and triggers a sync.
   Future<void> sendImmediateBatch({
     required List<Map<String, dynamic>> locations,
     int? surveiId,
@@ -115,8 +106,9 @@ class SchedulerService {
           ? tsRaw
           : (tsRaw is String ? DateTime.parse(tsRaw) : DateTime.now());
 
-      // UI may not always provide survei_id (e.g. no selected target yet).
       final resolvedSurveiId = (m['survei_id'] ?? m['surveiId'] ?? surveiId);
+
+      final resolvedSessionId = (m['session_id'] ?? m['sessionId']);
 
       final isMockedRaw = m['is_mocked'] ?? m['isMocked'] ?? false;
 
@@ -137,17 +129,20 @@ class SchedulerService {
             : (resolvedSurveiId == null
                   ? null
                   : (resolvedSurveiId as num).toInt()),
+        sessionId: resolvedSessionId is int
+            ? resolvedSessionId
+            : (resolvedSessionId == null
+                  ? null
+                  : (resolvedSessionId as num).toInt()),
         isSynced: false,
       );
     }).toList();
 
     await repo.insertBatch(entities);
 
-    // Force sync immediately (will pick up is_synced=0 rows).
     await _syncService.syncNow();
   }
 
-  /// Get count of locations pending sync (for UI display).
   Future<int> getPendingSyncCount() async {
     return _syncService.getPendingCount();
   }

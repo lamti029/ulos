@@ -2,10 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_constants.dart';
+import '../../core/controllers/tracking_controller.dart';
 import '../../core/services/dio_client.dart';
+import '../../core/services/scheduler_service.dart';
+import '../../core/services/location_repository.dart';
 import '../../core/utils/app_version_utils.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/utils/jwt_utils.dart';
+
 import '../login/login_page.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -17,14 +22,50 @@ class ProfilePage extends StatefulWidget {
 
 class _ProfilePageState extends State<ProfilePage> {
   String? _userName;
+  String? _email;
   String? _appVersionText;
   bool _isLoading = true;
+
+  String? _lastTokenSnapshot;
 
   @override
   void initState() {
     super.initState();
     _loadUserName();
+    _loadEmail();
     _loadAppVersion();
+    _setupAuthListener();
+  }
+
+  Future<void> _setupAuthListener() async {
+    // Reload profile if token changes (e.g., login user berbeda setelah session expired)
+    _lastTokenSnapshot ??= await DioClient().getToken();
+
+    // Polling ringan: refresh profil ketika token berubah.
+    // Ini menghindari ketergantungan pada global auth stream.
+    Future<void> loop() async {
+      while (mounted) {
+        await Future.delayed(const Duration(seconds: 2));
+        final current = await DioClient().getToken();
+        if (current == null) {
+          if (!mounted) return;
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const LoginPage()),
+            (route) => false,
+          );
+          return;
+        }
+
+        if (current != _lastTokenSnapshot) {
+          _lastTokenSnapshot = current;
+          await _loadUserName();
+          await _loadEmail();
+        }
+      }
+    }
+
+    // Fire and forget
+    loop();
   }
 
   Future<void> _loadAppVersion() async {
@@ -54,9 +95,48 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
+  Future<void> _loadEmail() async {
+    var email = await DioClient().getEmail();
+
+    // Fallback to JWT if not in prefs
+    if (email == null || email.isEmpty) {
+      email = await JwtUtils.getEmail();
+      if (email != null && email.isNotEmpty) {
+        await DioClient().setEmail(email);
+      }
+    }
+    if (mounted) {
+      setState(() {
+        _email = email ?? '-';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _stopTrackingIfActive() async {
+    // Requirement: jika tracking active, stop terlebih dahulu sebelum logout.
+    if (!TrackingController.instance.isTrackingActive) return;
+
+    // Stop background scheduler (GPS capture + sync) dari sisi main isolate.
+    await SchedulerService.instance.stop();
+
+    // Clear tracking state lokal.
+    await TrackingController.instance.clear();
+
+    // Pastikan flag prefs 'is_tracking' benar-benar false.
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('is_tracking', false);
+  }
+
   Future<void> _logout(BuildContext context) async {
     await DioClient().clearToken();
     await DioClient().clearUserName();
+    await DioClient().clearEmail();
+    try {
+      await LocationRepository().deleteSynced();
+    } catch (_) {
+      // logout tetap jalan meski pembersihan gagal
+    }
     if (context.mounted) {
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const LoginPage()),
@@ -66,6 +146,54 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   void _showLogoutConfirm(BuildContext context) {
+    final isTrackingActive = TrackingController.instance.isTrackingActive;
+
+    if (isTrackingActive) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          title: const Row(
+            children: [
+              Icon(
+                Icons.warning_amber_rounded,
+                color: AppColors.warning,
+                size: 28,
+              ),
+              SizedBox(width: 10),
+              Text('Tracking masih aktif'),
+            ],
+          ),
+          content: const Text(
+            'Tracking sedang berjalan. Stop tracking terlebih dahulu sebelum logout.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Batal'),
+            ),
+            ElevatedButton.icon(
+              onPressed: () async {
+                Navigator.of(ctx).pop();
+                await _stopTrackingIfActive();
+                if (!context.mounted) return;
+                _logout(context);
+              },
+              icon: const Icon(Icons.stop_circle_outlined),
+              label: const Text('Stop Tracking & Logout'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.error,
+                foregroundColor: Colors.white,
+              ),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -179,7 +307,7 @@ class _ProfilePageState extends State<ProfilePage> {
               // Info cards
               _InfoCard(
                     icon: Icons.person_outline_rounded,
-                    title: 'Nama Lengkap',
+                    title: 'Nama Pengguna',
                     value: _userName ?? '-',
                     iconColor: AppColors.primary,
                     iconBgColor: AppColors.primary.withAlpha(26),
@@ -189,11 +317,11 @@ class _ProfilePageState extends State<ProfilePage> {
                   .slideX(begin: -0.2, end: 0, duration: 600.ms, delay: 200.ms),
               const SizedBox(height: 12),
               _InfoCard(
-                    icon: Icons.badge_outlined,
-                    title: 'Role',
-                    value: 'Petugas Lapangan',
-                    iconColor: AppColors.success,
-                    iconBgColor: AppColors.success.withAlpha(26),
+                    icon: Icons.email_outlined,
+                    title: 'Email',
+                    value: _email ?? '-',
+                    iconColor: AppColors.primary,
+                    iconBgColor: AppColors.primary.withAlpha(26),
                   )
                   .animate()
                   .fadeIn(duration: 600.ms, delay: 300.ms)

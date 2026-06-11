@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:ulos/features/splash/wave_clipper.dart';
+
 import '../../core/constants/app_colors.dart';
 import '../../core/services/dio_client.dart';
 import '../../core/utils/jwt_utils.dart';
 import '../home/home_page.dart';
 import '../login/login_page.dart';
+import '../../core/services/notification_permission_service.dart';
 
 class SplashPage extends StatefulWidget {
   const SplashPage({super.key});
@@ -15,26 +16,72 @@ class SplashPage extends StatefulWidget {
 }
 
 class _SplashPageState extends State<SplashPage> {
+  final bool _isTest = const bool.fromEnvironment('FLUTTER_TEST');
+
+  bool _canceled = false;
+
   @override
   void initState() {
     super.initState();
-    _checkAuth();
+
+    if (!_isTest) {
+      _requestNotificationPermissionThenAuth();
+    }
+  }
+
+  @override
+  void dispose() {
+    _canceled = true;
+    super.dispose();
+  }
+
+  Future<void> _requestNotificationPermissionThenAuth() async {
+    try {
+      debugPrint('[SPLASH] requestIfNeeded: start');
+
+      await NotificationPermissionService.requestIfNeeded(
+        context,
+      ).timeout(const Duration(seconds: 8));
+      if (!mounted || _canceled) return;
+      debugPrint('[SPLASH] requestIfNeeded: done');
+    } catch (e) {
+      debugPrint('[SPLASH] requestIfNeeded: error/timeout -> $e');
+    }
+
+    if (!mounted || _canceled) return;
+    debugPrint('[SPLASH] proceed -> _checkAuth');
+    await _checkAuth();
   }
 
   Future<void> _checkAuth() async {
-    // Avoid async timers/navigation during widget tests.
+    debugPrint('[SPLASH] _checkAuth start');
+
     if (const bool.fromEnvironment('FLUTTER_TEST')) {
+      debugPrint('[SPLASH] _checkAuth skipped (FLUTTER_TEST)');
       return;
     }
 
-    await Future.delayed(const Duration(seconds: 3));
+    debugPrint('[SPLASH] waiting 1s');
+    await Future.delayed(const Duration(seconds: 1));
 
-    if (!mounted) return;
+    if (!mounted) {
+      debugPrint('[SPLASH] _checkAuth aborted (not mounted after delay)');
+      return;
+    }
 
+    debugPrint('[SPLASH] fetching token...');
     final token = await DioClient().getToken();
-    if (!mounted) return;
+    debugPrint(
+      '[SPLASH] token fetched: ${token == null ? 'null' : 'len=${token.length}'}',
+    );
+
+    if (!mounted) {
+      debugPrint('[SPLASH] _checkAuth aborted (not mounted after token)');
+      return;
+    }
 
     if (token == null || token.isEmpty) {
+      debugPrint('[SPLASH] no token -> LoginPage');
       Navigator.of(
         context,
       ).pushReplacement(MaterialPageRoute(builder: (_) => const LoginPage()));
@@ -142,26 +189,20 @@ class _SplashPageState extends State<SplashPage> {
                           ),
                         ),
                         // ƒchild: Image.asset('assets/images/logo.png'),
-                      ).animate().scale(
-                        duration: 800.ms,
-                        curve: Curves.easeOutBack,
                       ),
 
                       const SizedBox(height: 24),
 
                       // Title
                       Text(
-                            'Ulos',
-                            style: TextStyle(
-                              fontSize: isMobile ? 40 : 52,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.textPrimary,
-                              letterSpacing: 2,
-                            ),
-                          )
-                          .animate()
-                          .fadeIn(delay: 400.ms)
-                          .slideY(begin: 0.2, end: 0),
+                        'Ulos',
+                        style: TextStyle(
+                          fontSize: isMobile ? 40 : 52,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textPrimary,
+                          letterSpacing: 2,
+                        ),
+                      ),
 
                       // Subtitle
                       Text(
@@ -171,7 +212,7 @@ class _SplashPageState extends State<SplashPage> {
                           fontSize: isMobile ? 14 : 16,
                           color: Colors.grey[600],
                         ),
-                      ).animate().fadeIn(delay: 600.ms),
+                      ),
 
                       const SizedBox(height: 40),
 

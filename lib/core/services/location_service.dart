@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 import 'package:logger/logger.dart';
+import 'env_service.dart';
 
 class LocationService {
   final Logger _logger = Logger();
@@ -43,11 +44,11 @@ class LocationService {
     }
   }
 
-  Stream<Position> startTracking({int intervalSeconds = 10}) {
-    final locationSettings = const LocationSettings(
+  Stream<Position> startTracking() {
+    final locationSettings = LocationSettings(
       accuracy: LocationAccuracy.high,
-      timeLimit: Duration(seconds: 10),
-      distanceFilter: 0,
+      timeLimit: Duration(seconds: EnvService.locationIntervalSeconds),
+      distanceFilter: EnvService.distanceFilterMeters,
     );
 
     return Geolocator.getPositionStream(locationSettings: locationSettings);
